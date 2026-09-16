@@ -568,17 +568,36 @@ elif page == "📍 GPS Location":
             if current_lon is None:
                 current_lon = 0.0
 
-            latitude = st.number_input(
-                "Latitude",
-                value=float(current_lat),
-                format="%.6f"
-            )
+            location = st.text_input(
+    "📍 Location",
+    value=gps.get("location", ""),
+    placeholder="Example: Patancheru, Hyderabad, Telangana"
+)
 
-            longitude = st.number_input(
-                "Longitude",
-                value=float(current_lon),
-                format="%.6f"
-            )
+if st.button(
+    "📍 Update Location",
+    use_container_width=True
+):
+    selected_case_data["gps"] = {
+        "location": location.strip()
+    }
+
+    save_cases(
+        st.session_state.cases
+    )
+
+    st.success(
+        "Location updated successfully."
+    )
+
+if location.strip():
+    st.write(
+        f"**📍 Location:** {location}"
+    )
+else:
+    st.info(
+        "Location has not been set for this case."
+    )
 
             if st.button(
                 "📍 Update GPS Location",
