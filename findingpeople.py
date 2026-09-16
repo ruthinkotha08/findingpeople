@@ -320,8 +320,7 @@ elif page == "📝 Report Missing Person":
                     "status": "Missing",
                     "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "gps": {
-                        "latitude": None,
-                        "longitude": None
+                        "location": ""
                     }
                 }
 
@@ -559,69 +558,28 @@ elif page == "📍 GPS Location":
 
             gps = selected_case_data.get("gps", {})
 
-            current_lat = gps.get("latitude")
-            current_lon = gps.get("longitude")
-
-            if current_lat is None:
-                current_lat = 0.0
-
-            if current_lon is None:
-                current_lon = 0.0
-
             location = st.text_input(
-    "📍 Location",
-    value=gps.get("location", ""),
-    placeholder="Example: Patancheru, Hyderabad, Telangana"
-)
-
-if st.button(
-    "📍 Update Location",
-    use_container_width=True
-):
-    selected_case_data["gps"] = {
-        "location": location.strip()
-    }
-
-    save_cases(
-        st.session_state.cases
-    )
-
-    st.success(
-        "Location updated successfully."
-    )
-
-if location.strip():
-    st.write(
-        f"**📍 Location:** {location}"
-    )
-else:
-    st.info(
-        "Location has not been set for this case."
-    )
+                "📍 Location",
+                value=gps.get("location", ""),
+                placeholder="Example: Patancheru, Hyderabad, Telangana"
+            )
 
             if st.button(
-                "📍 Update GPS Location",
+                "📍 Update Location",
                 use_container_width=True
             ):
-
                 selected_case_data["gps"] = {
-                    "latitude": latitude,
-                    "longitude": longitude
+                    "location": location.strip()
                 }
 
                 save_cases(st.session_state.cases)
 
-                st.success("GPS location updated successfully.")
+                st.success("Location updated successfully.")
 
-            if latitude != 0 or longitude != 0:
-
-                st.write(f"**Latitude:** {latitude}")
-                st.write(f"**Longitude:** {longitude}")
-
-                st.map({
-                    "latitude": [latitude],
-                    "longitude": [longitude]
-                })
+            if location.strip():
+                st.write(f"**📍 Location:** {location}")
+            else:
+                st.info("Location has not been set for this case.")
 
 
 # ============================================================
@@ -712,12 +670,10 @@ elif page == "📊 Admin Dashboard":
 
                     st.success("Case status updated successfully.")
 
-                if case.get("gps", {}).get("latitude") is not None:
-                    st.write(
-                        "📍 GPS: "
-                        f"{case['gps']['latitude']}, "
-                        f"{case['gps']['longitude']}"
-                    )
+                gps_location = case.get("gps", {}).get("location", "")
+
+                if gps_location:
+                    st.write(f"📍 Location: {gps_location}")
 
 
 # ============================================================
