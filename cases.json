@@ -1,0 +1,19 @@
+[
+    {
+        "id": 1,
+        "name": "PEDDI SWARAJYAM",
+        "age": 70,
+        "gender": "Female",
+        "location": "In Home",
+        "last_seen": "14-06-2014 07:00",
+        "contact": "9440367081",
+        "description": "",
+        "photo": "uploads\\case_1.jpeg",
+        "status": "Found",
+        "created_at": "2026-09-16 22:37:56",
+        "gps": {
+            "latitude": 0.0,
+            "longitude": 0.0
+        }
+    }
+]
