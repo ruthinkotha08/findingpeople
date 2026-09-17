@@ -124,7 +124,7 @@ def create_model():
 
         return None, (
             "OpenCV face recognition module is not installed. "
-            "Check requirements.txt."
+            "Check streamlit opencv-contrib-python-headless numpy."
         )
 
     images = []
