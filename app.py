@@ -708,6 +708,544 @@ def admin_login():
     if login:
 
         if (
+            username == ADMIN_USER
+            and password == ADMIN_PASSWORD
+        ):
+
+            st.session_state.admin_logged_in = True
+            st.session_state.show_login = False
+
+            st.success(
+                "Login successful."
+            )
+
+            st.rerun()
+
+        else:
+
+            st.error(
+                "Invalid username or password."
+            )
+
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+
+st.sidebar.title(
+    "🔎 TRACE-AI"
+)
+
+pages = [
+    "🏠 Home",
+    "📝 Report Missing Person",
+    "🎫 Track Ticket",
+    "🔍 Search Cases",
+    "🤖 AI Face Search",
+    "📍 GPS Location",
+    "🚨 Alerts"
+]
+
+if st.session_state.admin_logged_in:
+
+    pages.append(
+        "📊 Admin Dashboard"
+    )
+
+page = st.sidebar.radio(
+    "Navigation",
+    pages
+)
+
+
+if st.session_state.admin_logged_in:
+
+    st.sidebar.success(
+        "👤 Admin logged in"
+    )
+
+    if st.sidebar.button(
+        "🚪 Logout",
+        use_container_width=True
+    ):
+
+        st.session_state.admin_logged_in = False
+        st.rerun()
+
+else:
+
+    if st.sidebar.button(
+        "🔐 Admin Login",
+        use_container_width=True
+    ):
+
+        st.session_state.show_login = True
+
+
+if (
+    st.session_state.get(
+        "show_login",
+        False
+    )
+    and not st.session_state.admin_logged_in
+):
+
+    admin_login()
+    st.stop()
+
+
+# ============================================================
+# HOME
+# ============================================================
+
+if page == "🏠 Home":
+
+    st.title(
+        "🔎 TRACE-AI"
+    )
+
+    st.subheader(
+        "Finding Missing People Using AI"
+    )
+
+    st.write(
+        "An AI-assisted system where the public "
+        "can report missing people, receive a ticket, "
+        "search cases and use AI-assisted face matching."
+    )
+
+    st.divider()
+
+    total = len(
+        st.session_state.cases
+    )
+
+    missing = sum(
+        c.get("status") == "Missing"
+        for c in st.session_state.cases
+    )
+
+    found = sum(
+        c.get("status") == "Found"
+        for c in st.session_state.cases
+    )
+
+    col1, col2, col3 = st.columns(
+        3
+    )
+
+    col1.metric(
+        "Total Cases",
+        total
+    )
+
+    col2.metric(
+        "Missing",
+        missing
+    )
+
+    col3.metric(
+        "Found",
+        found
+    )
+
+    st.divider()
+
+    st.header(
+        "How TRACE-AI Works"
+    )
+
+    a, b, c, d = st.columns(
+        4
+    )
+
+    a.subheader(
+        "1️⃣ Report"
+    )
+
+    a.write(
+        "Submit a missing-person report "
+        "and receive a ticket ID."
+    )
+
+    b.subheader(
+        "2️⃣ Search"
+    )
+
+    b.write(
+        "Search cases using name, "
+        "location or status."
+    )
+
+    c.subheader(
+        "3️⃣ AI"
+    )
+
+    c.write(
+        "Upload a photograph to find "
+        "potential face similarities."
+    )
+
+    d.subheader(
+        "4️⃣ Admin"
+    )
+
+    d.write(
+        "Only the administrator can change "
+        "the official case status."
+    )
+
+    st.warning(
+        "⚠️ AI matching provides potential leads only. "
+        "Human verification is required."
+    )
+
+
+# ============================================================
+# REPORT MISSING PERSON
+# ============================================================
+
+elif page == "📝 Report Missing Person":
+
+    st.header(
+        "📝 Report Missing Person"
+    )
+
+    st.info(
+        "Anyone can submit a report. "
+        "A ticket ID will be generated after submission."
+    )
+
+    with st.form(
+        "public_report_form"
+    ):
+
+        name = st.text_input(
+            "Full Name *"
+        )
+
+        age = st.number_input(
+            "Age",
+            min_value=0,
+            max_value=120,
+            value=18
+        )
+
+        gender = st.selectbox(
+            "Gender",
+            [
+                "Male",
+                "Female",
+                "Other",
+                "Prefer not to say"
+            ]
+        )
+
+        location = st.text_input(
+            "Last Seen Location *",
+            placeholder="Example: Hyderabad"
+        )
+
+        last_seen = st.text_input(
+            "Last Seen Date & Time",
+            placeholder="Example: 17-09-2026 08:30 PM"
+        )
+
+        reporter_name = st.text_input(
+            "Reporter Name"
+        )
+
+        contact = st.text_input(
+            "Reporter Contact Number"
+        )
+
+        description = st.text_area(
+            "Description",
+            placeholder=(
+                "Clothing, identifying marks "
+                "and other useful information"
+            )
+        )
+
+        photo = st.file_uploader(
+            "Upload Clear Face Photograph *",
+            type=[
+                "jpg",
+                "jpeg",
+                "png"
+            ]
+        )
+
+        submit = st.form_submit_button(
+            "🚨 Submit Missing-Person Report",
+            use_container_width=True
+        )
+
+    if submit:
+
+        if not name.strip():
+
+            st.error(
+                "Enter the person's name."
+            )
+
+        elif not location.strip():
+
+            st.error(
+                "Enter the last seen location."
+            )
+
+        elif photo is None:
+
+            st.error(
+                "Upload a photograph."
+            )
+
+        else:
+
+            image = read_image(
+                photo.getvalue()
+            )
+
+            if image is None:
+
+                st.error(
+                    "Invalid image."
+                )
+
+            else:
+
+                case_id = next_case_id()
+
+                ticket_id = make_ticket_id(
+                    case_id
+                )
+
+                extension = (
+                    os.path.splitext(
+                        photo.name
+                    )[1]
+                    .lower()
+                )
+
+                filename = (
+                    f"case_{case_id}"
+                    f"{extension}"
+                )
+
+                storage_path = upload_photo(
+                    photo.getvalue(),
+                    filename,
+                    photo.type
+                )
+
+                if storage_path is None:
+                    st.stop()
+
+                case = {
+
+                    "id": case_id,
+
+                    "ticket_id": ticket_id,
+
+                    "name": name.strip(),
+
+                    "age": int(age),
+
+                    "gender": gender,
+
+                    "location": location.strip(),
+
+                    "last_seen": last_seen.strip(),
+
+                    "reporter_name":
+                        reporter_name.strip(),
+
+                    "contact":
+                        contact.strip(),
+
+                    "description":
+                        description.strip(),
+
+                    "photo":
+                        storage_path,
+
+                    "status":
+                        "Missing",
+
+                    "created_at":
+                        datetime.now().strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        ),
+
+                    "gps": {
+                        "latitude": None,
+                        "longitude": None
+                    }
+                }
+
+                result = save_case(
+                    case
+                )
+
+                if result is None:
+                    st.stop()
+
+                st.session_state.cases.append(
+                    case
+                )
+
+                st.success(
+                    "✅ Report submitted successfully!"
+                )
+
+                st.subheader(
+                    "🎫 Your Ticket ID: "
+                    f"`{ticket_id}`"
+                )
+
+                st.info(
+                    "Save thi          case
+        )
+
+    if not images:
+
+        return (
+            None,
+            "No registered photographs "
+            "with detectable faces."
+        )
+
+    try:
+
+        model = (
+            cv2.face
+            .LBPHFaceRecognizer_create()
+        )
+
+        model.train(
+            images,
+            np.array(
+                labels,
+                dtype=np.int32
+            )
+        )
+
+        return (
+            model,
+            valid_cases
+        )
+
+    except Exception as e:
+
+        return (
+            None,
+            f"Could not create AI face model: {e}"
+        )
+
+
+def calculate_similarity(
+    distance
+):
+
+    score = (
+        100 -
+        (distance * 0.75)
+    )
+
+    return max(
+        0,
+        min(
+            100,
+            score
+        )
+    )
+
+
+# ============================================================
+# ID / TICKET FUNCTIONS
+# ============================================================
+
+def next_case_id():
+
+    ids = []
+
+    for case in st.session_state.cases:
+
+        try:
+
+            ids.append(
+                int(
+                    case.get(
+                        "id",
+                        0
+                    )
+                )
+            )
+
+        except (
+            ValueError,
+            TypeError
+        ):
+
+            pass
+
+    return (
+        max(
+            ids,
+            default=0
+        ) + 1
+    )
+
+
+def make_ticket_id(
+    case_id
+):
+
+    return (
+        "MP-"
+        + datetime.now().strftime("%Y%m%d")
+        + "-"
+        + f"{int(case_id):04d}"
+    )
+
+
+# ============================================================
+# ADMIN LOGIN
+# ============================================================
+
+def admin_login():
+
+    st.header(
+        "🔐 Admin Login"
+    )
+
+    st.info(
+        "Administrator access is required "
+        "only for case management."
+    )
+
+    with st.form(
+        "admin_login_form"
+    ):
+
+        username = st.text_input(
+            "Username"
+        )
+
+        password = st.text_input(
+            "Password",
+            type="password"
+        )
+
+        login = st.form_submit_button(
+            "🔑 Login",
+            use_container_width=True
+        )
+
+    if login:
+
+        if (
             usernameeen Date & Time",
             placeholder="Example: 17-09-2026 08:30 PM"
         )
