@@ -56,25 +56,76 @@ if "cases" not in st.session_state:
 # DATABASE FUNCTIONS
 # ============================================================
 
+# ============================================================
+# SUPABASE DATABASE FUNCTIONS
+# ============================================================
+
 def load_cases():
-    if not os.path.exists(DATA_FILE):
-        return []
-
     try:
-        with open(DATA_FILE, "r", encoding="utf-8") as file:
-            data = json.load(file)
-            return data if isinstance(data, list) else []
-    except Exception:
+        response = (
+            supabase
+            .table("cases")
+            .select("*")
+            .order("id")
+            .execute()
+        )
+
+        cases = response.data or []
+
+        # Convert Supabase column names to the format
+        # used by the rest of the application.
+        for case in cases:
+            case["photo"] = case.get("photo_path", "")
+
+            case["gps"] = {
+                "latitude": case.get("latitude"),
+                "longitude": case.get("longitude")
+            }
+
+        return cases
+
+    except Exception as e:
+        st.error("❌ Could not load cases from Supabase.")
+        st.code(str(e))
         return []
 
 
-def save_cases():
-    with open(DATA_FILE, "w", encoding="utf-8") as file:
-        json.dump(st.session_state.cases, file, indent=4)
+def save_case(case):
+    data = {
+        "id": int(case["id"]),
+        "ticket_id": case.get("ticket_id", ""),
+        "name": case.get("name", ""),
+        "age": int(case.get("age", 0)),
+        "gender": case.get("gender", ""),
+        "location": case.get("location", ""),
+        "last_seen": case.get("last_seen", ""),
+        "reporter_name": case.get("reporter_name", ""),
+        "contact": case.get("contact", ""),
+        "description": case.get("description", ""),
+        "photo_path": case.get("photo", ""),
+        "status": case.get("status", "Missing"),
+        "created_at": case.get("created_at"),
+        "latitude": case.get("gps", {}).get("latitude"),
+        "longitude": case.get("gps", {}).get("longitude")
+    }
+
+    supabase.table("cases").upsert(data).execute()
 
 
-if not st.session_state.cases:
-    st.session_state.cases = load_cases()
+def update_case_status(case_id, status):
+    supabase.table("cases").update(
+        {"status": status}
+    ).eq("id", int(case_id)).execute()
+
+
+def delete_case(case_id):
+    supabase.table("cases").delete().eq(
+        "id", int(case_id)
+    ).execute()
+
+
+# Load cases from Supabase when the application starts.
+st.session_state.cases = load_cases()
 
 
 # ============================================================
