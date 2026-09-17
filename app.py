@@ -15,8 +15,22 @@ st.set_page_config(
     layout="wide"
 )
 
-DATA_FILE = "cases.json"
+# ============================================================
+# SUPABASE DATABASE
+# ============================================================
+
+from supabase import create_client
+
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+
+supabase = create_client(
+    SUPABASE_URL,
+    SUPABASE_KEY
+)
+
 UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # Change these credentials when deploying.
 ADMIN_USER = "admin"
