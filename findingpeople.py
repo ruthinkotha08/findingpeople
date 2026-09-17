@@ -75,11 +75,81 @@ if not st.session_state.cases:
 # FACE DETECTOR
 # ============================================================
 
-FACE_CASCADE = cv2.CascadeClassifier(
-    cv2.data.haarcascades +
+# ============================================================
+# FACE DETECTOR
+# ============================================================
+
+CASCADE_FILE = os.path.join(
+    cv2.data.haarcascades,
     "haarcascade_frontalface_default.xml"
 )
 
+FACE_CASCADE = cv2.CascadeClassifier(CASCADE_FILE)
+
+if FACE_CASCADE.empty():
+    st.error(
+        "❌ ERROR: Haar Cascade face detector could not be loaded."
+    )
+
+
+# ============================================================
+# FACE DETECTION
+# ============================================================
+
+def detect_face(image):
+
+    if image is None:
+        return None
+
+    if FACE_CASCADE.empty():
+        return None
+
+    try:
+
+        gray = cv2.cvtColor(
+            image,
+            cv2.COLOR_BGR2GRAY
+        )
+
+        gray = cv2.equalizeHist(gray)
+
+        faces = FACE_CASCADE.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(60, 60)
+        )
+
+        if len(faces) == 0:
+            return None
+
+        # Select largest face
+        x, y, w, h = max(
+            faces,
+            key=lambda p: p[2] * p[3]
+        )
+
+        face = gray[
+            y:y + h,
+            x:x + w
+        ]
+
+        face = cv2.resize(
+            face,
+            (200, 200)
+        )
+
+        return face
+
+    except cv2.error as e:
+
+        st.error(
+            "❌ OpenCV face detection failed."
+        )
+
+        st.code(str(e))
+
+        return None
 
 # ============================================================
 # IMAGE FUNCTIONS
