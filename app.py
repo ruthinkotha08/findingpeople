@@ -48,7 +48,7 @@ BUCKET_NAME = "case-photos"
 # ============================================================
 
 ADMIN_USER = "admin"
-ADMIN_PASSWORD = "traceai123"
+ADMIN_PASSWORD = "Swarajyam@2014"
 
 # Minimum AI score required to show a potential match
 MATCH_THRESHOLD = 50.0
