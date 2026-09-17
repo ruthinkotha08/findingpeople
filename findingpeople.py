@@ -84,31 +84,43 @@ def detect_face(image):
 
     try:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        # Improve contrast
         gray = cv2.equalizeHist(gray)
 
+        # More tolerant settings
         faces = FACE_CASCADE.detectMultiScale(
             gray,
-            scaleFactor=1.1,
-            minNeighbors=5,
-            minSize=(60, 60)
+            scaleFactor=1.05,
+            minNeighbors=4,
+            minSize=(40, 40)
         )
 
         if len(faces) == 0:
             return None
 
-        # Select the largest detected face.
+        # Select the largest face
         x, y, w, h = max(
             faces,
             key=lambda p: p[2] * p[3]
         )
 
-        face = gray[y:y + h, x:x + w]
-        face = cv2.resize(face, (200, 200))
+        face = gray[
+            y:y + h,
+            x:x + w
+        ]
+
+        face = cv2.resize(
+            face,
+            (200, 200)
+        )
+
         return face
 
-    except cv2.error:
+    except cv2.error as e:
+        st.error("❌ OpenCV face detection failed.")
+        st.code(str(e))
         return None
-
 
 def read_image(data):
     array = np.frombuffer(data, dtype=np.uint8)
