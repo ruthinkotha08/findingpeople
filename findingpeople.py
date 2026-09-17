@@ -424,68 +424,64 @@ elif page == "📝 Report Missing Person":
             if image is None:
                 st.error("Invalid image.")
             else:
-                face = detect_face(image)
+                # IMPORTANT:
+                # Public report submission does NOT require successful
+                # face detection. A report can still be submitted when
+                # the face is sideways, partly covered, small, blurred,
+                # or otherwise difficult for the detector to find.
+                case_id = next_case_id()
+                ticket_id = make_ticket_id(case_id)
 
-                if face is None:
-                    st.error(
-                        "No face detected. Please upload a clear "
-                        "front-facing photograph."
-                    )
-                else:
-                    case_id = next_case_id()
-                    ticket_id = make_ticket_id(case_id)
+                extension = os.path.splitext(photo.name)[1].lower()
+                filename = f"case_{case_id}{extension}"
+                path = os.path.join(UPLOAD_DIR, filename)
 
-                    extension = os.path.splitext(photo.name)[1].lower()
-                    filename = f"case_{case_id}{extension}"
-                    path = os.path.join(UPLOAD_DIR, filename)
+                with open(path, "wb") as file:
+                    file.write(photo.getbuffer())
 
-                    with open(path, "wb") as file:
-                        file.write(photo.getbuffer())
+                case = {
+                    "id": case_id,
+                    "ticket_id": ticket_id,
+                    "name": name.strip(),
+                    "age": int(age),
+                    "gender": gender,
+                    "location": location.strip(),
+                    "last_seen": last_seen.strip(),
+                    "reporter_name": reporter_name.strip(),
+                    "contact": contact.strip(),
+                    "description": description.strip(),
+                    "photo": path,
 
-                    case = {
-                        "id": case_id,
-                        "ticket_id": ticket_id,
-                        "name": name.strip(),
-                        "age": int(age),
-                        "gender": gender,
-                        "location": location.strip(),
-                        "last_seen": last_seen.strip(),
-                        "reporter_name": reporter_name.strip(),
-                        "contact": contact.strip(),
-                        "description": description.strip(),
-                        "photo": path,
+                    # IMPORTANT:
+                    # Only Admin Dashboard can change this value.
+                    "status": "Missing",
 
-                        # IMPORTANT:
-                        # This is the official case status.
-                        # It can only be changed from Admin Dashboard.
-                        "status": "Missing",
+                    "created_at": datetime.now().strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    ),
 
-                        "created_at": datetime.now().strftime(
-                            "%Y-%m-%d %H:%M:%S"
-                        ),
-
-                        "gps": {
-                            "latitude": None,
-                            "longitude": None
-                        }
+                    "gps": {
+                        "latitude": None,
+                        "longitude": None
                     }
+                }
 
-                    st.session_state.cases.append(case)
-                    save_cases()
+                st.session_state.cases.append(case)
+                save_cases()
 
-                    st.success("✅ Report submitted successfully!")
-                    st.subheader(f"🎫 Your Ticket ID: `{ticket_id}`")
+                st.success("✅ Report submitted successfully!")
+                st.subheader(f"🎫 Your Ticket ID: `{ticket_id}`")
 
-                    st.info(
-                        "Save this Ticket ID. You can use it in "
-                        "the 'Track Ticket' page."
-                    )
+                st.info(
+                    "Save this Ticket ID. You can use it in "
+                    "the 'Track Ticket' page."
+                )
 
-                    st.image(
-                        image,
-                        channels="BGR",
-                        width=250
-                    )
+                st.image(
+                    image,
+                    channels="BGR",
+                    width=250
+                )
 
 
 # ============================================================
