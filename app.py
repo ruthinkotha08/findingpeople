@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 from datetime import datetime
 from supabase import create_client
+from urllib.request import urlopen
 
 
 # ============================================================
@@ -29,7 +30,6 @@ supabase = create_client(
     SUPABASE_KEY
 )
 
-# Supabase Storage bucket name
 PHOTO_BUCKET = "case-photos"
 
 
@@ -60,7 +60,6 @@ if "cases" not in st.session_state:
 # ============================================================
 
 def load_cases():
-    """Load all cases from Supabase."""
 
     try:
         response = (
@@ -75,9 +74,12 @@ def load_cases():
 
         for case in cases:
 
-            # Supabase uses photo_path.
-            # The rest of this app uses photo.
-            case["photo"] = case.get("photo_path", "")
+            # Database column is photo_path.
+            # Application uses photo.
+            case["photo"] = case.get(
+                "photo_path",
+                ""
+            )
 
             case["gps"] = {
                 "latitude": case.get("latitude"),
@@ -87,34 +89,82 @@ def load_cases():
         return cases
 
     except Exception as e:
-        st.error("❌ Could not load cases from Supabase.")
+
+        st.error(
+            "❌ Could not load cases from Supabase."
+        )
+
         st.code(str(e))
+
         return []
 
 
 def save_case(case):
-    """Insert or update one case in Supabase."""
 
     try:
 
-        gps = case.get("gps", {})
+        gps = case.get(
+            "gps",
+            {}
+        )
 
         data = {
             "id": int(case["id"]),
-            "ticket_id": case.get("ticket_id", ""),
-            "name": case.get("name", ""),
-            "age": int(case.get("age", 0)),
-            "gender": case.get("gender", ""),
-            "location": case.get("location", ""),
-            "last_seen": case.get("last_seen", ""),
-            "reporter_name": case.get("reporter_name", ""),
-            "contact": case.get("contact", ""),
-            "description": case.get("description", ""),
-            "photo_path": case.get("photo", ""),
-            "status": case.get("status", "Missing"),
-            "created_at": case.get("created_at"),
-            "latitude": gps.get("latitude"),
-            "longitude": gps.get("longitude")
+            "ticket_id": case.get(
+                "ticket_id",
+                ""
+            ),
+            "name": case.get(
+                "name",
+                ""
+            ),
+            "age": int(
+                case.get(
+                    "age",
+                    0
+                )
+            ),
+            "gender": case.get(
+                "gender",
+                ""
+            ),
+            "location": case.get(
+                "location",
+                ""
+            ),
+            "last_seen": case.get(
+                "last_seen",
+                ""
+            ),
+            "reporter_name": case.get(
+                "reporter_name",
+                ""
+            ),
+            "contact": case.get(
+                "contact",
+                ""
+            ),
+            "description": case.get(
+                "description",
+                ""
+            ),
+            "photo_path": case.get(
+                "photo",
+                ""
+            ),
+            "status": case.get(
+                "status",
+                "Missing"
+            ),
+            "created_at": case.get(
+                "created_at"
+            ),
+            "latitude": gps.get(
+                "latitude"
+            ),
+            "longitude": gps.get(
+                "longitude"
+            )
         }
 
         response = (
@@ -127,13 +177,20 @@ def save_case(case):
         return response
 
     except Exception as e:
-        st.error("❌ Could not save case.")
+
+        st.error(
+            "❌ Could not save case."
+        )
+
         st.code(str(e))
+
         return None
 
 
-def update_case_status(case_id, status):
-    """Update official case status."""
+def update_case_status(
+    case_id,
+    status
+):
 
     try:
 
@@ -143,20 +200,29 @@ def update_case_status(case_id, status):
             .update({
                 "status": status
             })
-            .eq("id", int(case_id))
+            .eq(
+                "id",
+                int(case_id)
+            )
             .execute()
         )
 
         return response
 
     except Exception as e:
-        st.error("❌ Could not update case status.")
+
+        st.error(
+            "❌ Could not update case status."
+        )
+
         st.code(str(e))
+
         return None
 
 
-def delete_case(case_id):
-    """Delete case from Supabase."""
+def delete_case(
+    case_id
+):
 
     try:
 
@@ -164,31 +230,41 @@ def delete_case(case_id):
             supabase
             .table("cases")
             .delete()
-            .eq("id", int(case_id))
+            .eq(
+                "id",
+                int(case_id)
+            )
             .execute()
         )
 
         return response
 
     except Exception as e:
-        st.error("❌ Could not delete case.")
+
+        st.error(
+            "❌ Could not delete case."
+        )
+
         st.code(str(e))
+
         return None
 
 
 # ============================================================
-# SUPABASE STORAGE FUNCTIONS
+# SUPABASE STORAGE
 # ============================================================
 
-def upload_photo(file_bytes, filename, mime_type):
-    """
-    Upload photograph to Supabase Storage.
-    Returns the storage path.
-    """
+def upload_photo(
+    file_bytes,
+    filename,
+    mime_type
+):
 
     try:
 
-        storage_path = f"cases/{filename}"
+        storage_path = (
+            f"cases/{filename}"
+        )
 
         response = (
             supabase
@@ -196,304 +272,7 @@ def upload_photo(file_bytes, filename, mime_type):
             .from_(PHOTO_BUCKET)
             .upload(
                 path=storage_path,
-                file=file_bytes,
-                file_options={
-                    "content-type": mime_type,
-                    "upsert": "true"
-                }
-            )
-        )
-
-        return storage_path
-
-    except Exception as e:
-        st.error("❌ Could not upload photograph to Supabase Storage.")
-        st.code(str(e))
-        return None
-
-
-def download_photo(storage_path):
-    """
-    Download photograph from Supabase Storage.
-    Returns image bytes.
-    """
-
-    if not storage_path:
-        return None
-
-    try:
-
-        data = (
-            supabase
-            .storage
-            .from_(PHOTO_BUCKET)
-            .download(storage_path)
-        )
-
-        return data
-
-    except Exception:
-        return None
-
-
-def delete_photo(storage_path):
-    """Delete photograph from Supabase Storage."""
-
-    if not storage_path:
-        return
-
-    try:
-
-        (
-            supabase
-            .storage
-            .from_(PHOTO_BUCKET)
-            .remove([storage_path])
-        )
-
-    except Exception:
-        pass
-
-
-# ============================================================
-# LOAD CASES
-# ============================================================
-
-st.session_state.cases = load_cases()
-
-
-# ============================================================
-# FACE DETECTOR
-# ============================================================
-
-CASCADE_PATH = os.path.join(
-    cv2.data.haarcascades,
-    "haarcascade_frontalface_default.xml"
-)
-
-FACE_CASCADE = cv2.CascadeClassifier(CASCADE_PATH)
-
-
-def detect_face(image):
-
-    if image is None:
-        return None
-
-    if FACE_CASCADE.empty():
-        return None
-
-    try:
-
-        gray = cv2.cvtColor(
-            image,
-            cv2.COLOR_BGR2GRAY
-        )
-
-        gray = cv2.equalizeHist(gray)
-
-        faces = FACE_CASCADE.detectMultiScale(
-            gray,
-            scaleFactor=1.05,
-            minNeighbors=4,
-            minSize=(40, 40)
-        )
-
-        if len(faces) == 0:
-            return None
-
-        x, y, w, h = max(
-            faces,
-            key=lambda p: p[2] * p[3]
-        )
-
-        face = gray[
-            y:y + h,
-            x:x + w
-        ]
-
-        face = cv2.resize(
-            face,
-            (200, 200)
-        )
-
-        return face
-
-    except cv2.error as e:
-
-        st.error("❌ OpenCV face detection failed.")
-        st.code(str(e))
-
-        return None
-
-
-def read_image(data):
-
-    array = np.frombuffer(
-        data,
-        dtype=np.uint8
-    )
-
-    return cv2.imdecode(
-        array,
-        cv2.IMREAD_COLOR
-    )
-
-
-# ============================================================
-# GET STORED IMAGE
-# ============================================================
-
-def get_case_image(case):
-
-    photo_path = case.get("photo", "")
-
-    if not photo_path:
-        return None
-
-    # New Supabase Storage photographs
-    if photo_path.startswith("cases/"):
-
-        data = download_photo(photo_path)
-
-        if data:
-            return read_image(data)
-
-        return None
-
-    # Old local-file compatibility
-    if os.path.exists(photo_path):
-
-        image = cv2.imread(photo_path)
-
-        return image
-
-    return None
-
-
-# ============================================================
-# FACE RECOGNITION MODEL
-# ============================================================
-
-def create_model():
-
-    if not hasattr(cv2, "face"):
-
-        return (
-            None,
-            "OpenCV face module is missing. "
-            "Install opencv-contrib-python-headless."
-        )
-
-    images = []
-    labels = []
-    valid_cases = []
-
-    for case in st.session_state.cases:
-
-        image = get_case_image(case)
-
-        if image is None:
-            continue
-
-        face = detect_face(image)
-
-        if face is None:
-            continue
-
-        try:
-
-            label = int(case["id"])
-
-        except (
-            ValueError,
-            TypeError,
-            KeyError
-        ):
-
-            continue
-
-        images.append(face)
-        labels.append(label)
-        valid_cases.append(case)
-
-    if not images:
-
-        return (
-            None,
-            "No registered photographs with detectable faces."
-        )
-
-    model = cv2.face.LBPHFaceRecognizer_create()
-
-    model.train(
-        images,
-        np.array(
-            labels,
-            dtype=np.int32
-        )
-    )
-
-    return model, valid_cases
-
-
-def calculate_similarity(distance):
-
-    score = 100 - (
-        distance * 0.75
-    )
-
-    return max(
-        0,
-        min(
-            100,
-            score
-        )
-    )
-
-
-# ============================================================
-# ID / TICKET HELPERS
-# ============================================================
-
-def next_case_id():
-
-    ids = []
-
-    for case in st.session_state.cases:
-
-        try:
-
-            ids.append(
-                int(case.get("id", 0))
-            )
-
-        except (
-            ValueError,
-            TypeError
-        ):
-
-            pass
-
-    return max(
-        ids,
-        default=0
-    ) + 1
-
-
-def make_ticket_id(case_id):
-
-    return (
-        f"MP-"
-        f"{datetime.now().strftime('%Y%m%d')}-"
-        f"{int(case_id):04d}"
-    )
-
-
-# ============================================================
-# ADMIN LOGIN
-# ============================================================
-
-def admin_login():
+                file=fileadmin_login():
 
     st.header("🔐 Admin Login")
 
