@@ -21,7 +21,7 @@ st.set_page_config(
 
 
 # ============================================================
-# SUPABASE CONNECTION
+# SUPABASE
 # ============================================================
 
 try:
@@ -48,7 +48,8 @@ BUCKET_NAME = "case-photos"
 ADMIN_USER = "admin"
 ADMIN_PASSWORD = "Swarajyam@2014"
 
-# AI result threshold
+ADMIN_EMAIL = "rkotha2@student.gitam.edu"
+
 MATCH_THRESHOLD = 50.0
 
 
@@ -68,9 +69,7 @@ if "cases" not in st.session_state:
 # ============================================================
 
 def load_cases():
-
     try:
-
         response = (
             supabase
             .table("cases")
@@ -82,17 +81,13 @@ def load_cases():
         return response.data or []
 
     except Exception as e:
-
         st.error("Could not load cases from Supabase.")
         st.error(str(e))
-
         return []
 
 
 def get_next_id():
-
     try:
-
         response = (
             supabase
             .table("cases")
@@ -103,33 +98,21 @@ def get_next_id():
         )
 
         if response.data:
-
-            return int(
-                response.data[0]["id"]
-            ) + 1
+            return int(response.data[0]["id"]) + 1
 
         return 1
 
     except Exception:
-
         return 1
 
 
 def create_ticket_id(case_id):
-
-    date_part = datetime.now().strftime(
-        "%Y%m%d"
-    )
-
-    return (
-        f"MP-{date_part}-{case_id:04d}"
-    )
+    today = datetime.now().strftime("%Y%m%d")
+    return f"MP-{today}-{case_id:04d}"
 
 
 def insert_case(case_data):
-
     try:
-
         response = (
             supabase
             .table("cases")
@@ -140,20 +123,13 @@ def insert_case(case_data):
         return response.data
 
     except Exception as e:
-
         st.error("Could not save the case.")
         st.error(str(e))
-
         return None
 
 
-def update_case_status(
-    case_id,
-    new_status
-):
-
+def update_case_status(case_id, new_status):
     try:
-
         response = (
             supabase
             .table("cases")
@@ -167,20 +143,13 @@ def update_case_status(
         return response.data
 
     except Exception as e:
-
         st.error("Could not update case status.")
         st.error(str(e))
-
         return None
 
 
-def update_case_location(
-    case_id,
-    new_location
-):
-
+def update_case_location(case_id, new_location):
     try:
-
         response = (
             supabase
             .table("cases")
@@ -194,17 +163,13 @@ def update_case_location(
         return response.data
 
     except Exception as e:
-
-        st.error("Could not update the location.")
+        st.error("Could not update location.")
         st.error(str(e))
-
         return None
 
 
 def delete_case(case_id):
-
     try:
-
         response = (
             supabase
             .table("cases")
@@ -216,24 +181,18 @@ def delete_case(case_id):
         return response.data
 
     except Exception as e:
-
         st.error("Could not delete the case.")
         st.error(str(e))
-
         return None
 
 
 # ============================================================
-# SUPABASE STORAGE FUNCTIONS
+# STORAGE
 # ============================================================
 
-def upload_photo(
-    uploaded_file,
-    ticket_id
-):
+def upload_photo(uploaded_file, ticket_id):
 
     try:
-
         extension = (
             uploaded_file.name
             .split(".")[-1]
@@ -246,7 +205,6 @@ def upload_photo(
             "png",
             "webp"
         ]:
-
             extension = "jpg"
 
         unique_name = uuid4().hex[:10]
@@ -258,9 +216,7 @@ def upload_photo(
             f"{extension}"
         )
 
-        file_bytes = (
-            uploaded_file.getvalue()
-        )
+        file_bytes = uploaded_file.getvalue()
 
         supabase.storage.from_(
             BUCKET_NAME
@@ -278,22 +234,17 @@ def upload_photo(
         return storage_path
 
     except Exception as e:
-
         st.error("Photo upload failed.")
         st.error(str(e))
-
         return None
 
 
-def delete_photo(
-    storage_path
-):
+def delete_photo(storage_path):
 
     if not storage_path:
         return
 
     try:
-
         supabase.storage.from_(
             BUCKET_NAME
         ).remove(
@@ -301,19 +252,15 @@ def delete_photo(
         )
 
     except Exception:
-
         pass
 
 
-def get_public_photo_url(
-    storage_path
-):
+def get_public_photo_url(storage_path):
 
     if not storage_path:
         return None
 
     try:
-
         return (
             supabase
             .storage
@@ -324,13 +271,10 @@ def get_public_photo_url(
         )
 
     except Exception:
-
         return None
 
 
-def download_image(
-    storage_path
-):
+def download_image(storage_path):
 
     url = get_public_photo_url(
         storage_path
@@ -369,20 +313,15 @@ def download_image(
         return image
 
     except Exception:
-
         return None
 
 
 # ============================================================
-# HAAR CASCADE FACE DETECTOR
+# HAAR CASCADE
 # ============================================================
 
 @st.cache_resource
 def load_face_detector():
-
-    # --------------------------------------------------------
-    # METHOD 1: OpenCV installed cascade
-    # --------------------------------------------------------
 
     try:
 
@@ -396,17 +335,11 @@ def load_face_detector():
         )
 
         if not detector.empty():
-
             return detector
 
     except Exception:
-
         pass
 
-
-    # --------------------------------------------------------
-    # METHOD 2: Download official OpenCV cascade
-    # --------------------------------------------------------
 
     cascade_url = (
         "https://raw.githubusercontent.com/"
@@ -439,10 +372,7 @@ def load_face_detector():
             delete=False
         ) as temp_file:
 
-            temp_file.write(
-                xml_data
-            )
-
+            temp_file.write(xml_data)
             temp_path = temp_file.name
 
         detector = cv2.CascadeClassifier(
@@ -450,11 +380,9 @@ def load_face_detector():
         )
 
         if not detector.empty():
-
             return detector
 
     except Exception:
-
         pass
 
     finally:
@@ -462,13 +390,8 @@ def load_face_detector():
         if temp_path:
 
             try:
-
-                os.remove(
-                    temp_path
-                )
-
+                os.remove(temp_path)
             except Exception:
-
                 pass
 
     return None
@@ -478,15 +401,9 @@ def load_face_detector():
 # FACE DETECTION
 # ============================================================
 
-def detect_face(
-    image,
-    detector
-):
+def detect_face(image, detector):
 
-    if image is None:
-        return None
-
-    if detector is None:
+    if image is None or detector is None:
         return None
 
     try:
@@ -496,9 +413,7 @@ def detect_face(
             cv2.COLOR_BGR2GRAY
         )
 
-        gray = cv2.equalizeHist(
-            gray
-        )
+        gray = cv2.equalizeHist(gray)
 
         faces = detector.detectMultiScale(
             gray,
@@ -508,7 +423,6 @@ def detect_face(
         )
 
         if len(faces) == 0:
-
             return None
 
         x, y, w, h = max(
@@ -530,29 +444,21 @@ def detect_face(
         return face
 
     except Exception:
-
         return None
 
 
 # ============================================================
-# CREATE AI FACE MODEL
+# AI MODEL
 # ============================================================
 
-def create_face_model(
-    cases
-):
+def create_face_model(cases):
 
-    if not hasattr(
-        cv2,
-        "face"
-    ):
-
+    if not hasattr(cv2, "face"):
         return None, {}
 
     detector = load_face_detector()
 
     if detector is None:
-
         return None, {}
 
     training_faces = []
@@ -568,7 +474,6 @@ def create_face_model(
         )
 
         if not storage_path:
-
             continue
 
         image = download_image(
@@ -576,7 +481,6 @@ def create_face_model(
         )
 
         if image is None:
-
             continue
 
         face = detect_face(
@@ -585,16 +489,10 @@ def create_face_model(
         )
 
         if face is None:
-
             continue
 
-        training_faces.append(
-            face
-        )
-
-        labels.append(
-            label_number
-        )
+        training_faces.append(face)
+        labels.append(label_number)
 
         label_to_case[
             label_number
@@ -603,7 +501,6 @@ def create_face_model(
         label_number += 1
 
     if len(training_faces) == 0:
-
         return None, {}
 
     try:
@@ -619,13 +516,9 @@ def create_face_model(
             np.array(labels)
         )
 
-        return (
-            model,
-            label_to_case
-        )
+        return model, label_to_case
 
     except Exception:
-
         return None, {}
 
 
@@ -633,12 +526,9 @@ def create_face_model(
 # AI SCORE
 # ============================================================
 
-def calculate_ai_score(
-    distance
-):
+def calculate_ai_score(distance):
 
     if distance is None:
-
         return 0.0
 
     score = (
@@ -691,6 +581,7 @@ page = st.sidebar.radio(
         "🤖 AI Face Search",
         "📍 GPS Location",
         "🚨 Alerts",
+        "📧 Contact Administrator",
         "🔐 Admin Login"
     ]
 )
@@ -712,7 +603,6 @@ if st.session_state.admin_logged_in:
     ):
 
         st.session_state.admin_logged_in = False
-
         st.rerun()
 
 
@@ -772,21 +662,18 @@ if page == "🏠 Home":
         st.columns(3)
 
     with col1:
-
         st.metric(
             "Total Cases",
             total_cases
         )
 
     with col2:
-
         st.metric(
             "Missing",
             missing_cases
         )
 
     with col3:
-
         st.metric(
             "Found",
             found_cases
@@ -808,10 +695,6 @@ elif page == "📝 Report Missing Person":
 
     st.title(
         "📝 Report Missing Person"
-    )
-
-    st.write(
-        "Enter the person's information below."
     )
 
     with st.form(
@@ -859,7 +742,7 @@ elif page == "📝 Report Missing Person":
         )
 
         contact = st.text_input(
-            "Contact Number"
+            "Reporter Contact Number *"
         )
 
         description = st.text_area(
@@ -996,7 +879,7 @@ elif page == "📝 Report Missing Person":
                     )
 
                     st.warning(
-                        "Please save this Ticket ID for tracking."
+                        "Please save your Ticket ID."
                     )
 
 
@@ -1151,9 +1034,7 @@ elif page == "🔍 Search Cases":
 
     search_location = st.text_input(
         "Location",
-        placeholder=(
-            "Example: Hyderabad"
-        )
+        placeholder="Example: Hyderabad"
     )
 
     search_status = st.selectbox(
@@ -1219,9 +1100,7 @@ elif page == "🔍 Search Cases":
                 and status_match
             ):
 
-                results.append(
-                    case
-                )
+                results.append(case)
 
         if not results:
 
@@ -1333,8 +1212,8 @@ elif page == "🤖 AI Face Search":
     )
 
     st.warning(
-        "The AI score is a screening result, not proof "
-        "of identity. Always verify the person."
+        "The AI score is a screening result and is not "
+        "proof of identity. Always verify the result."
     )
 
     search_photo = st.file_uploader(
@@ -1410,8 +1289,7 @@ elif page == "🤖 AI Face Search":
                         )
 
                         st.info(
-                            "Use a clear, front-facing "
-                            "photograph with good lighting."
+                            "Use a clear, front-facing photograph."
                         )
 
                     else:
@@ -1440,7 +1318,7 @@ elif page == "🤖 AI Face Search":
 
                                 st.warning(
                                     "No usable case photographs "
-                                    "are available for comparison."
+                                    "are available."
                                 )
 
                         else:
@@ -1462,9 +1340,9 @@ elif page == "🤖 AI Face Search":
                                         distance
                                     )
 
-                                # ==========================================
-                                # 50% OR HIGHER
-                                # ==========================================
+                                # ----------------------------------------
+                                # MATCH >= 50%
+                                # ----------------------------------------
 
                                 if (
                                     matched_case
@@ -1481,10 +1359,9 @@ elif page == "🤖 AI Face Search":
                                     )
 
                                     st.warning(
-                                        "This is a potential match "
-                                        "and should be verified by "
-                                        "the appropriate authorities "
-                                        "or administrator."
+                                        "This is a potential match. "
+                                        "Please verify the person "
+                                        "before taking action."
                                     )
 
                                     col1, col2 = \
@@ -1540,9 +1417,9 @@ elif page == "🤖 AI Face Search":
                                             f"{matched_case.get('status', '')}"
                                         )
 
-                                    # ======================================
+                                    # ----------------------------------------
                                     # REPORTER CONTACT
-                                    # ======================================
+                                    # ----------------------------------------
 
                                     st.divider()
 
@@ -1559,34 +1436,103 @@ elif page == "🤖 AI Face Search":
                                     if reporter_contact:
 
                                         st.success(
-                                            f"📞 Contact Number: "
+                                            f"📞 Reporter Contact Number: "
                                             f"{reporter_contact}"
-                                        )
-
-                                        st.info(
-                                            """
-                                            If you believe you have
-                                            found this person, contact
-                                            the reporter using the number
-                                            above and also inform the
-                                            TRACE-AI administrator.
-
-                                            Please verify the person's
-                                            identity before taking action.
-                                            """
                                         )
 
                                     else:
 
                                         st.warning(
-                                            "The reporter did not provide "
-                                            "a contact number."
+                                            "No reporter contact number "
+                                            "was provided."
                                         )
 
-                                        st.info(
-                                            "Please contact the "
-                                            "TRACE-AI administrator."
+                                    # ----------------------------------------
+                                    # CONTACT ADMINISTRATOR
+                                    # ----------------------------------------
+
+                                    st.divider()
+
+                                    st.subheader(
+                                        "📧 Contact TRACE-AI Administrator"
+                                    )
+
+                                    st.write(
+                                        """
+                                        If you believe you have found
+                                        this person, please inform the
+                                        TRACE-AI administrator and provide
+                                        the Ticket ID.
+                                        """
+                                    )
+
+                                    email_subject = (
+                                        "TRACE-AI Potential Match - "
+                                        + str(
+                                            matched_case.get(
+                                                "ticket_id",
+                                                ""
+                                            )
                                         )
+                                    )
+
+                                    email_body = (
+                                        "Hello TRACE-AI Administrator,\n\n"
+                                        "I believe I may have found the "
+                                        "person associated with this case.\n\n"
+                                        "Ticket ID: "
+                                        + str(
+                                            matched_case.get(
+                                                "ticket_id",
+                                                ""
+                                            )
+                                        )
+                                        + "\n"
+                                        "Name: "
+                                        + str(
+                                            matched_case.get(
+                                                "name",
+                                                ""
+                                            )
+                                        )
+                                        + "\n"
+                                        "Location: "
+                                        + str(
+                                            matched_case.get(
+                                                "location",
+                                                ""
+                                            )
+                                        )
+                                        + "\n"
+                                        "AI Similarity Score: "
+                                        + str(score)
+                                        + "%\n\n"
+                                        "Please verify this information."
+                                    )
+
+                                    mailto_link = (
+                                        "mailto:"
+                                        + ADMIN_EMAIL
+                                        + "?subject="
+                                        + urllib.parse.quote(
+                                            email_subject
+                                        )
+                                        + "&body="
+                                        + urllib.parse.quote(
+                                            email_body
+                                        )
+                                    )
+
+                                    st.link_button(
+                                        "📧 Email Administrator",
+                                        mailto_link,
+                                        use_container_width=True
+                                    )
+
+                                    st.info(
+                                        f"Administrator Email: "
+                                        f"{ADMIN_EMAIL}"
+                                    )
 
                                 else:
 
@@ -1601,8 +1547,7 @@ elif page == "🤖 AI Face Search":
                                     )
 
                                     st.info(
-                                        "Try a clearer face photograph "
-                                        "with good lighting."
+                                        "Try a clearer face photograph."
                                     )
 
                             except Exception as e:
@@ -1617,18 +1562,18 @@ elif page == "🤖 AI Face Search":
 
 
 # ============================================================
-# GPS LOCATION
+# LOCATION
 # ============================================================
 
 elif page == "📍 GPS Location":
 
     st.title(
-        "📍 GPS Location"
+        "📍 Location"
     )
 
     st.write(
         """
-        This section now uses the normal location name.
+        This section uses the normal location name.
         Latitude and longitude are not required.
         """
     )
@@ -1815,6 +1760,65 @@ elif page == "🚨 Alerts":
                             f"**Description:** "
                             f"{case.get('description')}"
                         )
+
+
+# ============================================================
+# CONTACT ADMINISTRATOR
+# ============================================================
+
+elif page == "📧 Contact Administrator":
+
+    st.title(
+        "📧 Contact TRACE-AI Administrator"
+    )
+
+    st.write(
+        """
+        If you believe you have found a missing person,
+        please contact the TRACE-AI administrator.
+        """
+    )
+
+    st.subheader(
+        "Administrator Email"
+    )
+
+    st.info(
+        ADMIN_EMAIL
+    )
+
+    subject = st.text_input(
+        "Subject",
+        value="TRACE-AI Missing Person Information"
+    )
+
+    message = st.text_area(
+        "Message",
+        placeholder=(
+            "Enter the Ticket ID and information "
+            "about where you found the person."
+        )
+    )
+
+    email_link = (
+        "mailto:"
+        + ADMIN_EMAIL
+        + "?subject="
+        + urllib.parse.quote(subject)
+        + "&body="
+        + urllib.parse.quote(message)
+    )
+
+    st.link_button(
+        "📧 Email Administrator",
+        email_link,
+        use_container_width=True
+    )
+
+    st.caption(
+        "Please provide the Ticket ID when contacting "
+        "the administrator."
+    )
 
 
 # ============================================================
