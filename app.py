@@ -56,6 +56,26 @@ if "cases" not in st.session_state:
 
 
 # ============================================================
+# IMAGE FUNCTIONS
+# ============================================================
+
+def read_image(data):
+    try:
+        array = np.frombuffer(
+            data,
+            dtype=np.uint8
+        )
+
+        return cv2.imdecode(
+            array,
+            cv2.IMREAD_COLOR
+        )
+
+    except Exception:
+        return None
+
+
+# ============================================================
 # SUPABASE DATABASE FUNCTIONS
 # ============================================================
 
@@ -74,8 +94,6 @@ def load_cases():
 
         for case in cases:
 
-            # Database column is photo_path.
-            # Application uses photo.
             case["photo"] = case.get(
                 "photo_path",
                 ""
@@ -110,58 +128,72 @@ def save_case(case):
 
         data = {
             "id": int(case["id"]),
+
             "ticket_id": case.get(
                 "ticket_id",
                 ""
             ),
+
             "name": case.get(
                 "name",
                 ""
             ),
+
             "age": int(
                 case.get(
                     "age",
                     0
                 )
             ),
+
             "gender": case.get(
                 "gender",
                 ""
             ),
+
             "location": case.get(
                 "location",
                 ""
             ),
+
             "last_seen": case.get(
                 "last_seen",
                 ""
             ),
+
             "reporter_name": case.get(
                 "reporter_name",
                 ""
             ),
+
             "contact": case.get(
                 "contact",
                 ""
             ),
+
             "description": case.get(
                 "description",
                 ""
             ),
+
             "photo_path": case.get(
                 "photo",
                 ""
             ),
+
             "status": case.get(
                 "status",
                 "Missing"
             ),
+
             "created_at": case.get(
                 "created_at"
             ),
+
             "latitude": gps.get(
                 "latitude"
             ),
+
             "longitude": gps.get(
                 "longitude"
             )
@@ -266,22 +298,398 @@ def upload_photo(
             f"cases/{filename}"
         )
 
-        response = (
+        supabase.storage.from_(
+            PHOTO_BUCKET
+        ).upload(
+            path=storage_path,
+            file=file_bytes,
+            file_options={
+                "content-type": mime_type,
+                "upsert": "false"
+            }
+        )
+
+        return storage_path
+
+    except Exception as e:
+
+        st.error(
+            "❌ Could not upload photograph."
+        )
+
+        st.code(str(e))
+
+        return None
+
+
+def get_public_photo_url(
+    storage_path
+):
+
+    if not storage_path:
+        return None
+
+    try:
+
+        result = (
             supabase
             .storage
             .from_(PHOTO_BUCKET)
-            .upload(
-                path=storage_path,
-                file=fileadmin_login():
+            .get_public_url(
+                storage_path
+            )
+        )
 
-    st.header("🔐 Admin Login")
+        return result
 
-    st.info(
-        "Administrator access is required only "
-        "for case management."
+    except Exception:
+        return None
+
+
+def delete_photo(
+    storage_path
+):
+
+    if not storage_path:
+        return
+
+    if not storage_path.startswith(
+        "cases/"
+    ):
+        return
+
+    try:
+
+        (
+            supabase
+            .storage
+            .from_(PHOTO_BUCKET)
+            .remove([
+                storage_path
+            ])
+        )
+
+    except Exception:
+        pass
+
+
+def get_case_image(case):
+
+    photo_path = case.get(
+        "photo",
+        ""
     )
 
-    with st.form("admin_login_form"):
+    if not photo_path:
+        return None
+
+    # New Supabase Storage image
+    if photo_path.startswith(
+        "cases/"
+    ):
+
+        url = get_public_photo_url(
+            photo_path
+        )
+
+        if not url:
+            return None
+
+        try:
+
+            image_data = urlopen(
+                url,
+                timeout=15
+            ).read()
+
+            return read_image(
+                image_data
+            )
+
+        except Exception:
+            return None
+
+    # Old local image compatibility
+    if os.path.exists(
+        photo_path
+    ):
+
+        try:
+
+            return cv2.imread(
+                photo_path
+            )
+
+        except Exception:
+            return None
+
+    return None
+
+
+# ============================================================
+# LOAD CASES
+# ============================================================
+
+st.session_state.cases = load_cases()
+
+
+# ============================================================
+# FACE DETECTOR
+# ============================================================
+
+CASCADE_PATH = os.path.join(
+    cv2.data.haarcascades,
+    "haarcascade_frontalface_default.xml"
+)
+
+FACE_CASCADE = cv2.CascadeClassifier(
+    CASCADE_PATH
+)
+
+
+def detect_face(image):
+
+    if image is None:
+        return None
+
+    if FACE_CASCADE.empty():
+        return None
+
+    try:
+
+        gray = cv2.cvtColor(
+            image,
+            cv2.COLOR_BGR2GRAY
+        )
+
+        gray = cv2.equalizeHist(
+            gray
+        )
+
+        faces = FACE_CASCADE.detectMultiScale(
+            gray,
+            scaleFactor=1.05,
+            minNeighbors=4,
+            minSize=(40, 40)
+        )
+
+        if len(faces) == 0:
+            return None
+
+        x, y, w, h = max(
+            faces,
+            key=lambda p: p[2] * p[3]
+        )
+
+        face = gray[
+            y:y + h,
+            x:x + w
+        ]
+
+        face = cv2.resize(
+            face,
+            (200, 200)
+        )
+
+        return face
+
+    except cv2.error as e:
+
+        st.error(
+            "❌ OpenCV face detection failed."
+        )
+
+        st.code(
+            str(e)
+        )
+
+        return None
+
+
+# ============================================================
+# FACE RECOGNITION MODEL
+# ============================================================
+
+def create_model():
+
+    if not hasattr(
+        cv2,
+        "face"
+    ):
+
+        return (
+            None,
+            "OpenCV face module is missing. "
+            "Make sure opencv-contrib-python-headless "
+            "is installed."
+        )
+
+    images = []
+    labels = []
+    valid_cases = []
+
+    for case in st.session_state.cases:
+
+        image = get_case_image(
+            case
+        )
+
+        if image is None:
+            continue
+
+        face = detect_face(
+            image
+        )
+
+        if face is None:
+            continue
+
+        try:
+
+            label = int(
+                case["id"]
+            )
+
+        except (
+            ValueError,
+            TypeError,
+            KeyError
+        ):
+
+            continue
+
+        images.append(
+            face
+        )
+
+        labels.append(
+            label
+        )
+
+        valid_cases.append(
+            case
+        )
+
+    if not images:
+
+        return (
+            None,
+            "No registered photographs "
+            "with detectable faces."
+        )
+
+    try:
+
+        model = (
+            cv2.face
+            .LBPHFaceRecognizer_create()
+        )
+
+        model.train(
+            images,
+            np.array(
+                labels,
+                dtype=np.int32
+            )
+        )
+
+        return (
+            model,
+            valid_cases
+        )
+
+    except Exception as e:
+
+        return (
+            None,
+            f"Could not create AI face model: {e}"
+        )
+
+
+def calculate_similarity(
+    distance
+):
+
+    score = (
+        100 -
+        (distance * 0.75)
+    )
+
+    return max(
+        0,
+        min(
+            100,
+            score
+        )
+    )
+
+
+# ============================================================
+# ID / TICKET FUNCTIONS
+# ============================================================
+
+def next_case_id():
+
+    ids = []
+
+    for case in st.session_state.cases:
+
+        try:
+
+            ids.append(
+                int(
+                    case.get(
+                        "id",
+                        0
+                    )
+                )
+            )
+
+        except (
+            ValueError,
+            TypeError
+        ):
+
+            pass
+
+    return (
+        max(
+            ids,
+            default=0
+        ) + 1
+    )
+
+
+def make_ticket_id(
+    case_id
+):
+
+    return (
+        "MP-"
+        + datetime.now().strftime("%Y%m%d")
+        + "-"
+        + f"{int(case_id):04d}"
+    )
+
+
+# ============================================================
+# ADMIN LOGIN
+# ============================================================
+
+def admin_login():
+
+    st.header(
+        "🔐 Admin Login"
+    )
+
+    st.info(
+        "Administrator access is required "
+        "only for case management."
+    )
+
+    with st.form(
+        "admin_login_form"
+    ):
 
         username = st.text_input(
             "Username"
@@ -300,230 +708,7 @@ def upload_photo(
     if login:
 
         if (
-            username == ADMIN_USER
-            and password == ADMIN_PASSWORD
-        ):
-
-            st.session_state.admin_logged_in = True
-            st.session_state.show_login = False
-
-            st.success(
-                "Login successful."
-            )
-
-            st.rerun()
-
-        else:
-
-            st.error(
-                "Invalid username or password."
-            )
-
-
-# ============================================================
-# SIDEBAR
-# ============================================================
-
-st.sidebar.title("🔎 TRACE-AI")
-
-pages = [
-    "🏠 Home",
-    "📝 Report Missing Person",
-    "🎫 Track Ticket",
-    "🔍 Search Cases",
-    "🤖 AI Face Search",
-    "📍 GPS Location",
-    "🚨 Alerts"
-]
-
-if st.session_state.admin_logged_in:
-
-    pages.append(
-        "📊 Admin Dashboard"
-    )
-
-page = st.sidebar.radio(
-    "Navigation",
-    pages
-)
-
-
-if st.session_state.admin_logged_in:
-
-    st.sidebar.success(
-        "👤 Admin logged in"
-    )
-
-    if st.sidebar.button(
-        "🚪 Logout",
-        use_container_width=True
-    ):
-
-        st.session_state.admin_logged_in = False
-        st.rerun()
-
-else:
-
-    if st.sidebar.button(
-        "🔐 Admin Login",
-        use_container_width=True
-    ):
-
-        st.session_state.show_login = True
-
-
-if (
-    st.session_state.get(
-        "show_login",
-        False
-    )
-    and not st.session_state.admin_logged_in
-):
-
-    admin_login()
-    st.stop()
-
-
-# ============================================================
-# HOME
-# ============================================================
-
-if page == "🏠 Home":
-
-    st.title("🔎 TRACE-AI")
-
-    st.subheader(
-        "Finding Missing People Using AI"
-    )
-
-    st.write(
-        "An AI-assisted system where the public can "
-        "report missing people, receive a ticket, "
-        "search cases and use AI-assisted face matching."
-    )
-
-    st.divider()
-
-    total = len(
-        st.session_state.cases
-    )
-
-    missing = sum(
-        c.get("status") == "Missing"
-        for c in st.session_state.cases
-    )
-
-    found = sum(
-        c.get("status") == "Found"
-        for c in st.session_state.cases
-    )
-
-    col1, col2, col3 = st.columns(3)
-
-    col1.metric(
-        "Total Cases",
-        total
-    )
-
-    col2.metric(
-        "Missing",
-        missing
-    )
-
-    col3.metric(
-        "Found",
-        found
-    )
-
-    st.divider()
-
-    st.header(
-        "How TRACE-AI Works"
-    )
-
-    a, b, c, d = st.columns(4)
-
-    a.subheader("1️⃣ Report")
-
-    a.write(
-        "Submit a missing-person report "
-        "and receive a ticket ID."
-    )
-
-    b.subheader("2️⃣ Search")
-
-    b.write(
-        "Search cases using name, "
-        "location or status."
-    )
-
-    c.subheader("3️⃣ AI")
-
-    c.write(
-        "Upload a photograph to find "
-        "potential face similarities."
-    )
-
-    d.subheader("4️⃣ Admin")
-
-    d.write(
-        "Only the administrator can change "
-        "the official case status."
-    )
-
-    st.warning(
-        "⚠️ AI matching provides potential leads only. "
-        "Human verification is required."
-    )
-
-
-# ============================================================
-# REPORT MISSING PERSON
-# ============================================================
-
-elif page == "📝 Report Missing Person":
-
-    st.header(
-        "📝 Report Missing Person"
-    )
-
-    st.info(
-        "Anyone can submit a report. "
-        "A ticket ID will be generated after submission."
-    )
-
-    with st.form(
-        "public_report_form"
-    ):
-
-        name = st.text_input(
-            "Full Name *"
-        )
-
-        age = st.number_input(
-            "Age",
-            min_value=0,
-            max_value=120,
-            value=18
-        )
-
-        gender = st.selectbox(
-            "Gender",
-            [
-                "Male",
-                "Female",
-                "Other",
-                "Prefer not to say"
-            ]
-        )
-
-        location = st.text_input(
-            "Last Seen Location *",
-            placeholder="Example: Hyderabad"
-        )
-
-        last_seen = st.text_input(
-            "Last Seen Date & Time",
+            usernameeen Date & Time",
             placeholder="Example: 17-09-2026 08:30 PM"
         )
 
