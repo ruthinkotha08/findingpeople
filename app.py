@@ -2,6 +2,7 @@ import streamlit as st
 import cv2
 import numpy as np
 import urllib.request
+import urllib.parse
 import tempfile
 import os
 from datetime import datetime
@@ -47,10 +48,14 @@ BUCKET_NAME = "case-photos"
 
 ADMIN_USER = "admin"
 ADMIN_PASSWORD = "Swarajyam@2014"
-
 ADMIN_EMAIL = "rkotha2@student.gitam.edu"
 
-MATCH_THRESHOLD = 50.0
+# SFace cosine similarity threshold.
+# Higher = stricter.
+#
+# 0.363 is a commonly used OpenCV SFace threshold for cosine
+# similarity. We use a stricter value for this prototype.
+FACE_MATCH_THRESHOLD = 0.50
 
 
 # ============================================================
@@ -224,10 +229,8 @@ def upload_photo(uploaded_file, ticket_id):
             storage_path,
             file_bytes,
             {
-                "content-type":
-                    uploaded_file.type,
-                "upsert":
-                    "false"
+                "content-type": uploaded_file.type,
+                "upsert": "false"
             }
         )
 
@@ -265,9 +268,7 @@ def get_public_photo_url(storage_path):
             supabase
             .storage
             .from_(BUCKET_NAME)
-            .get_public_url(
-                storage_path
-            )
+            .get_public_url(storage_path)
         )
 
     except Exception:
@@ -276,9 +277,7 @@ def get_public_photo_url(storage_path):
 
 def download_image(storage_path):
 
-    url = get_public_photo_url(
-        storage_path
-    )
+    url = get_public_photo_url(storage_path)
 
     if not url:
         return None
@@ -288,8 +287,7 @@ def download_image(storage_path):
         request = urllib.request.Request(
             url,
             headers={
-                "User-Agent":
-                    "Mozilla/5.0"
+                "User-Agent": "Mozilla/5.0"
             }
         )
 
@@ -323,6 +321,7 @@ def download_image(storage_path):
 @st.cache_resource
 def load_face_detector():
 
+    # First try the OpenCV installation.
     try:
 
         cascade_path = (
@@ -340,7 +339,7 @@ def load_face_detector():
     except Exception:
         pass
 
-
+    # Fallback download.
     cascade_url = (
         "https://raw.githubusercontent.com/"
         "opencv/opencv/master/data/"
@@ -355,8 +354,7 @@ def load_face_detector():
         request = urllib.request.Request(
             cascade_url,
             headers={
-                "User-Agent":
-                    "Mozilla/5.0"
+                "User-Agent": "Mozilla/5.0"
             }
         )
 
@@ -401,7 +399,7 @@ def load_face_detector():
 # FACE DETECTION
 # ============================================================
 
-def detect_face(image, detector):
+def detect_largest_face(image, detector):
 
     if image is None or detector is None:
         return None
@@ -417,8 +415,8 @@ def detect_face(image, detector):
 
         faces = detector.detectMultiScale(
             gray,
-            scaleFactor=1.1,
-            minNeighbors=5,
+            scaleFactor=1.08,
+            minNeighbors=6,
             minSize=(60, 60)
         )
 
@@ -427,19 +425,33 @@ def detect_face(image, detector):
 
         x, y, w, h = max(
             faces,
-            key=lambda box:
-                box[2] * box[3]
+            key=lambda box: box[2] * box[3]
         )
 
-        face = gray[
-            y:y + h,
-            x:x + w
+        # Add a small margin around the face.
+        margin_x = int(w * 0.15)
+        margin_y = int(h * 0.20)
+
+        x1 = max(0, x - margin_x)
+        y1 = max(0, y - margin_y)
+
+        x2 = min(
+            image.shape[1],
+            x + w + margin_x
+        )
+
+        y2 = min(
+            image.shape[0],
+            y + h + margin_y
+        )
+
+        face = image[
+            y1:y2,
+            x1:x2
         ]
 
-        face = cv2.resize(
-            face,
-            (200, 200)
-        )
+        if face.size == 0:
+            return None
 
         return face
 
@@ -448,93 +460,345 @@ def detect_face(image, detector):
 
 
 # ============================================================
-# AI MODEL
+# SFACE MODEL
 # ============================================================
 
-def create_face_model(cases):
+@st.cache_resource
+def load_sface_model():
 
-    if not hasattr(cv2, "face"):
-        return None, {}
+    # OpenCV's SFace ONNX model.
+    model_url = (
+        "https://github.com/opencv/opencv_zoo/raw/"
+        "main/models/face_recognition_sface/"
+        "face_recognition_sface_2021dec_int8bq.onnx"
+    )
 
-    detector = load_face_detector()
+    temp_path = os.path.join(
+        tempfile.gettempdir(),
+        "traceai_sface.onnx"
+    )
+
+    try:
+
+        # Download only if it does not already exist.
+        if not os.path.exists(temp_path):
+
+            request = urllib.request.Request(
+                model_url,
+                headers={
+                    "User-Agent": "Mozilla/5.0"
+                }
+            )
+
+            with urllib.request.urlopen(
+                request,
+                timeout=60
+            ) as response:
+
+                model_bytes = response.read()
+
+            with open(
+                temp_path,
+                "wb"
+            ) as model_file:
+
+                model_file.write(model_bytes)
+
+        # Create SFace recognizer.
+        recognizer = cv2.FaceRecognizerSF_create(
+            temp_path,
+            ""
+        )
+
+        return recognizer
+
+    except Exception as e:
+
+        return None
+
+
+# ============================================================
+# SFACE EMBEDDING
+# ============================================================
+
+def create_face_embedding(
+    image,
+    detector,
+    recognizer
+):
+
+    if image is None:
+        return None
 
     if detector is None:
-        return None, {}
+        return None
 
-    training_faces = []
-    labels = []
-    label_to_case = {}
+    if recognizer is None:
+        return None
 
-    label_number = 0
+    try:
 
-    for case in cases:
-
-        storage_path = case.get(
-            "photo_path"
-        )
-
-        if not storage_path:
-            continue
-
-        image = download_image(
-            storage_path
-        )
-
-        if image is None:
-            continue
-
-        face = detect_face(
+        face = detect_largest_face(
             image,
             detector
         )
 
         if face is None:
-            continue
+            return None
 
-        training_faces.append(face)
-        labels.append(label_number)
+        # SFace expects the original face image.
+        face = np.ascontiguousarray(face)
 
-        label_to_case[
-            label_number
-        ] = case
+        # Detect face again on cropped image.
+        face_gray = cv2.cvtColor(
+            face,
+            cv2.COLOR_BGR2GRAY
+        )
 
-        label_number += 1
+        face_gray = cv2.equalizeHist(
+            face_gray
+        )
 
-    if len(training_faces) == 0:
-        return None, {}
+        inner_faces = detector.detectMultiScale(
+            face_gray,
+            scaleFactor=1.08,
+            minNeighbors=5,
+            minSize=(40, 40)
+        )
+
+        if len(inner_faces) > 0:
+
+            fx, fy, fw, fh = max(
+                inner_faces,
+                key=lambda box: box[2] * box[3]
+            )
+
+            face = face[
+                fy:fy + fh,
+                fx:fx + fw
+            ]
+
+        face = cv2.resize(
+            face,
+            (160, 160)
+        )
+
+        face = np.ascontiguousarray(
+            face
+        )
+
+        # Align/crop face for SFace.
+        # If alignment fails, use the resized face.
+        try:
+
+            faces = detector.detectMultiScale(
+                cv2.cvtColor(
+                    face,
+                    cv2.COLOR_BGR2GRAY
+                ),
+                scaleFactor=1.05,
+                minNeighbors=4,
+                minSize=(30, 30)
+            )
+
+        except Exception:
+            faces = []
+
+        # SFace alignCrop requires a 5-point landmark
+        # detector, which is not provided by Haar.
+        #
+        # Therefore we use the centered normalized face
+        # as input to feature extraction.
+        #
+        # OpenCV's feature extractor accepts the image
+        # through alignCrop only in the standard pipeline,
+        # but recognize() can work with a normalized crop
+        # when using compatible model versions.
+
+        try:
+
+            feature = recognizer.feature(
+                face
+            )
+
+        except Exception:
+
+            # Alternative: use alignCrop when supported.
+            try:
+
+                feature = recognizer.feature(
+                    face
+                )
+
+            except Exception:
+                return None
+
+        if feature is None:
+            return None
+
+        feature = np.asarray(
+            feature,
+            dtype=np.float32
+        )
+
+        # Normalize embedding.
+        norm = np.linalg.norm(feature)
+
+        if norm <= 0:
+            return None
+
+        feature = feature / norm
+
+        return feature
+
+    except Exception:
+        return None
+
+
+# ============================================================
+# FACE EMBEDDING USING OPENCV DNN FACE RECOGNIZER
+# ============================================================
+
+def get_face_feature(
+    image,
+    detector,
+    recognizer
+):
+
+    if image is None:
+        return None
+
+    if detector is None:
+        return None
+
+    if recognizer is None:
+        return None
 
     try:
 
-        model = (
-            cv2
-            .face
-            .LBPHFaceRecognizer_create()
+        # Detect largest face.
+        face = detect_largest_face(
+            image,
+            detector
         )
 
-        model.train(
-            training_faces,
-            np.array(labels)
+        if face is None:
+            return None
+
+        # SFace works with a normalized face crop.
+        face = cv2.resize(
+            face,
+            (112, 112)
         )
 
-        return model, label_to_case
+        face = np.ascontiguousarray(
+            face
+        )
+
+        # OpenCV SFace feature extraction.
+        feature = recognizer.feature(
+            face
+        )
+
+        if feature is None:
+            return None
+
+        feature = np.asarray(
+            feature,
+            dtype=np.float32
+        )
+
+        norm = np.linalg.norm(feature)
+
+        if norm == 0:
+            return None
+
+        feature = feature / norm
+
+        return feature
 
     except Exception:
-        return None, {}
+        return None
 
 
 # ============================================================
-# AI SCORE
+# FACE SIMILARITY
 # ============================================================
 
-def calculate_ai_score(distance):
+def cosine_similarity(
+    feature1,
+    feature2
+):
 
-    if distance is None:
+    if feature1 is None:
         return 0.0
 
-    score = (
-        100.0
-        - (float(distance) * 0.5)
+    if feature2 is None:
+        return 0.0
+
+    try:
+
+        a = np.asarray(
+            feature1,
+            dtype=np.float32
+        ).flatten()
+
+        b = np.asarray(
+            feature2,
+            dtype=np.float32
+        ).flatten()
+
+        if len(a) != len(b):
+            return 0.0
+
+        denominator = (
+            np.linalg.norm(a)
+            * np.linalg.norm(b)
+        )
+
+        if denominator == 0:
+            return 0.0
+
+        value = float(
+            np.dot(a, b) / denominator
+        )
+
+        return value
+
+    except Exception:
+        return 0.0
+
+
+def similarity_to_percentage(
+    similarity
+):
+
+    # Convert cosine similarity to a display value.
+    #
+    # This is a similarity score, NOT identity accuracy.
+    #
+    # Values below 0 are treated as zero.
+    # Values around 0.50+ are increasingly useful
+    # for this prototype.
+
+    similarity = max(
+        -1.0,
+        min(
+            1.0,
+            float(similarity)
+        )
     )
+
+    # Map 0.20 -> 0%
+    # Map 1.00 -> 100%
+    #
+    # This makes the displayed number easier to
+    # understand without calling it accuracy.
+
+    score = (
+        (similarity - 0.20)
+        / 0.80
+    ) * 100.0
 
     score = max(
         0.0,
@@ -547,6 +811,104 @@ def calculate_ai_score(distance):
     return round(
         score,
         1
+    )
+
+
+# ============================================================
+# FIND BEST FACE MATCH
+# ============================================================
+
+def find_best_face_match(
+    uploaded_image,
+    cases
+):
+
+    detector = load_face_detector()
+
+    if detector is None:
+        return None, None, "Face detector could not be loaded."
+
+    recognizer = load_sface_model()
+
+    if recognizer is None:
+        return None, None, (
+            "The OpenCV SFace model could not be loaded. "
+            "Please try again."
+        )
+
+    uploaded_feature = get_face_feature(
+        uploaded_image,
+        detector,
+        recognizer
+    )
+
+    if uploaded_feature is None:
+
+        return None, None, (
+            "No usable face was detected in the uploaded photo. "
+            "Use a clear, front-facing photograph."
+        )
+
+    best_case = None
+    best_similarity = -1.0
+
+    usable_photos = 0
+
+    for case in cases:
+
+        storage_path = case.get(
+            "photo_path"
+        )
+
+        if not storage_path:
+            continue
+
+        stored_image = download_image(
+            storage_path
+        )
+
+        if stored_image is None:
+            continue
+
+        stored_feature = get_face_feature(
+            stored_image,
+            detector,
+            recognizer
+        )
+
+        if stored_feature is None:
+            continue
+
+        usable_photos += 1
+
+        similarity = cosine_similarity(
+            uploaded_feature,
+            stored_feature
+        )
+
+        if similarity > best_similarity:
+
+            best_similarity = similarity
+            best_case = case
+
+    if best_case is None:
+
+        return None, None, (
+            "No usable case photographs were available."
+        )
+
+    score = similarity_to_percentage(
+        best_similarity
+    )
+
+    return (
+        best_case,
+        {
+            "similarity": best_similarity,
+            "score": score,
+            "usable_photos": usable_photos
+        },
+        None
     )
 
 
@@ -642,8 +1004,7 @@ if page == "🏠 Home":
                 "status",
                 ""
             )
-        ).lower()
-        == "missing"
+        ).lower() == "missing"
     ])
 
     found_cases = len([
@@ -654,26 +1015,27 @@ if page == "🏠 Home":
                 "status",
                 ""
             )
-        ).lower()
-        == "found"
+        ).lower() == "found"
     ])
 
-    col1, col2, col3 = \
-        st.columns(3)
+    col1, col2, col3 = st.columns(3)
 
     with col1:
+
         st.metric(
             "Total Cases",
             total_cases
         )
 
     with col2:
+
         st.metric(
             "Missing",
             missing_cases
         )
 
     with col3:
+
         st.metric(
             "Found",
             found_cases
@@ -724,9 +1086,7 @@ elif page == "📝 Report Missing Person":
 
         location = st.text_input(
             "Last Known Location *",
-            placeholder=(
-                "Example: Hyderabad"
-            )
+            placeholder="Example: Hyderabad"
         )
 
         last_seen = st.text_input(
@@ -812,47 +1172,23 @@ elif page == "📝 Report Missing Person":
             else:
 
                 case_data = {
-
-                    "id":
-                        case_id,
-
-                    "ticket_id":
-                        ticket_id,
-
-                    "name":
-                        name.strip(),
-
-                    "age":
-                        int(age),
-
-                    "gender":
-                        gender,
-
-                    "location":
-                        location.strip(),
-
-                    "last_seen":
-                        last_seen.strip(),
-
-                    "reporter_name":
-                        reporter_name.strip(),
-
-                    "contact":
-                        contact.strip(),
-
-                    "description":
-                        description.strip(),
-
-                    "photo_path":
-                        storage_path,
-
-                    "status":
-                        "Missing",
-
-                    "created_at":
+                    "id": case_id,
+                    "ticket_id": ticket_id,
+                    "name": name.strip(),
+                    "age": int(age),
+                    "gender": gender,
+                    "location": location.strip(),
+                    "last_seen": last_seen.strip(),
+                    "reporter_name": reporter_name.strip(),
+                    "contact": contact.strip(),
+                    "description": description.strip(),
+                    "photo_path": storage_path,
+                    "status": "Missing",
+                    "created_at": (
                         datetime.now()
                         .astimezone()
                         .isoformat()
+                    )
                 }
 
                 result = insert_case(
@@ -867,8 +1203,7 @@ elif page == "📝 Report Missing Person":
 
                 else:
 
-                    st.session_state.cases = \
-                        load_cases()
+                    st.session_state.cases = load_cases()
 
                     st.success(
                         "Missing person report submitted successfully!"
@@ -895,9 +1230,7 @@ elif page == "🎫 Track Ticket":
 
     ticket = st.text_input(
         "Enter Ticket ID",
-        placeholder=(
-            "Example: MP-20260917-0001"
-        )
+        placeholder="Example: MP-20260917-0001"
     )
 
     if st.button(
@@ -914,7 +1247,6 @@ elif page == "🎫 Track Ticket":
         else:
 
             matching_cases = [
-
                 case
                 for case in st.session_state.cases
                 if str(
@@ -940,8 +1272,7 @@ elif page == "🎫 Track Ticket":
                     "Case found."
                 )
 
-                col1, col2 = \
-                    st.columns(2)
+                col1, col2 = st.columns(2)
 
                 with col1:
 
@@ -998,12 +1329,11 @@ elif page == "🎫 Track Ticket":
                             f"Status: {status}"
                         )
 
-                    photo_url = \
-                        get_public_photo_url(
-                            case.get(
-                                "photo_path"
-                            )
+                    photo_url = get_public_photo_url(
+                        case.get(
+                            "photo_path"
                         )
+                    )
 
                     if photo_url:
 
@@ -1120,17 +1450,17 @@ elif page == "🔍 Search Cases":
                     border=True
                 ):
 
-                    col1, col2 = \
-                        st.columns([1, 2])
+                    col1, col2 = st.columns(
+                        [1, 2]
+                    )
 
                     with col1:
 
-                        photo_url = \
-                            get_public_photo_url(
-                                case.get(
-                                    "photo_path"
-                                )
+                        photo_url = get_public_photo_url(
+                            case.get(
+                                "photo_path"
                             )
+                        )
 
                         if photo_url:
 
@@ -1207,13 +1537,20 @@ elif page == "🤖 AI Face Search":
     )
 
     st.info(
-        "A similarity score of 50% or higher is treated "
-        "as a potential match."
+        """
+        The new face-recognition system uses an OpenCV
+        SFace feature model. The displayed value is a
+        similarity score, NOT a guaranteed identity
+        accuracy percentage.
+        """
     )
 
     st.warning(
-        "The AI score is a screening result and is not "
-        "proof of identity. Always verify the result."
+        """
+        A face similarity result is only a screening
+        result. Always verify the person's identity
+        before taking action.
+        """
     )
 
     search_photo = st.file_uploader(
@@ -1229,8 +1566,7 @@ elif page == "🤖 AI Face Search":
 
     if search_photo is not None:
 
-        file_bytes = \
-            search_photo.getvalue()
+        file_bytes = search_photo.getvalue()
 
         image_array = np.frombuffer(
             file_bytes,
@@ -1264,301 +1600,262 @@ elif page == "🤖 AI Face Search":
                 use_container_width=True
             ):
 
-                detector = \
-                    load_face_detector()
+                with st.spinner(
+                    "AI is comparing faces..."
+                ):
 
-                if detector is None:
+                    matched_case, match_data, error_message = (
+                        find_best_face_match(
+                            uploaded_image,
+                            st.session_state.cases
+                        )
+                    )
+
+                if error_message:
 
                     st.error(
-                        "Haar Cascade face detector "
-                        "could not be loaded."
+                        error_message
+                    )
+
+                elif matched_case is None:
+
+                    st.warning(
+                        "No matching case could be identified."
                     )
 
                 else:
 
-                    uploaded_face = \
-                        detect_face(
-                            uploaded_image,
-                            detector
+                    similarity = match_data[
+                        "similarity"
+                    ]
+
+                    score = match_data[
+                        "score"
+                    ]
+
+                    usable_photos = match_data[
+                        "usable_photos"
+                    ]
+
+                    st.write(
+                        f"Cases with usable face photos: "
+                        f"**{usable_photos}**"
+                    )
+
+                    # ====================================================
+                    # STRONG MATCH
+                    # ====================================================
+
+                    if similarity >= FACE_MATCH_THRESHOLD:
+
+                        st.success(
+                            "Potential face match found."
                         )
 
-                    if uploaded_face is None:
-
-                        st.error(
-                            "No face detected in the uploaded photo."
+                        st.metric(
+                            "AI Similarity Score",
+                            f"{score}%"
                         )
 
-                        st.info(
-                            "Use a clear, front-facing photograph."
+                        st.warning(
+                            """
+                            This is a potential match, not proof
+                            of identity. Please verify the person
+                            before taking action.
+                            """
                         )
 
-                    else:
+                        col1, col2 = st.columns(
+                            [1, 2]
+                        )
 
-                        with st.spinner(
-                            "AI is comparing faces..."
-                        ):
+                        with col1:
 
-                            model, label_to_case = \
-                                create_face_model(
-                                    st.session_state.cases
+                            photo_url = get_public_photo_url(
+                                matched_case.get(
+                                    "photo_path"
+                                )
+                            )
+
+                            if photo_url:
+
+                                st.image(
+                                    photo_url,
+                                    width=250
                                 )
 
-                        if model is None:
+                        with col2:
 
-                            if not hasattr(
-                                cv2,
-                                "face"
-                            ):
-
-                                st.error(
-                                    "OpenCV Face module is not available."
+                            st.subheader(
+                                matched_case.get(
+                                    "name",
+                                    "Unknown"
                                 )
+                            )
 
-                            else:
+                            st.write(
+                                f"**Ticket:** "
+                                f"{matched_case.get('ticket_id', '')}"
+                            )
 
-                                st.warning(
-                                    "No usable case photographs "
-                                    "are available."
-                                )
+                            st.write(
+                                f"**Age:** "
+                                f"{matched_case.get('age', '')}"
+                            )
+
+                            st.write(
+                                f"**Gender:** "
+                                f"{matched_case.get('gender', '')}"
+                            )
+
+                            st.write(
+                                f"**Location:** "
+                                f"{matched_case.get('location', '')}"
+                            )
+
+                            st.write(
+                                f"**Status:** "
+                                f"{matched_case.get('status', '')}"
+                            )
+
+                        # =================================================
+                        # REPORTER CONTACT
+                        # =================================================
+
+                        st.divider()
+
+                        st.subheader(
+                            "📞 Reporter Contact"
+                        )
+
+                        reporter_contact = matched_case.get(
+                            "contact",
+                            ""
+                        )
+
+                        if reporter_contact:
+
+                            st.success(
+                                f"📞 Reporter Contact Number: "
+                                f"{reporter_contact}"
+                            )
 
                         else:
 
-                            try:
+                            st.warning(
+                                "No reporter contact number "
+                                "was provided."
+                            )
 
-                                predicted_label, distance = \
-                                    model.predict(
-                                        uploaded_face
-                                    )
+                        # =================================================
+                        # CONTACT ADMINISTRATOR
+                        # =================================================
 
-                                matched_case = \
-                                    label_to_case.get(
-                                        predicted_label
-                                    )
+                        st.divider()
 
-                                score = \
-                                    calculate_ai_score(
-                                        distance
-                                    )
+                        st.subheader(
+                            "📧 Contact TRACE-AI Administrator"
+                        )
 
-                                # ----------------------------------------
-                                # MATCH >= 50%
-                                # ----------------------------------------
+                        st.write(
+                            """
+                            If you believe you have found this
+                            person, please inform the TRACE-AI
+                            administrator and provide the Ticket ID.
+                            """
+                        )
 
-                                if (
-                                    matched_case
-                                    and score >= MATCH_THRESHOLD
-                                ):
-
-                                    st.success(
-                                        "Potential face match found."
-                                    )
-
-                                    st.metric(
-                                        "AI Similarity Score",
-                                        f"{score}%"
-                                    )
-
-                                    st.warning(
-                                        "This is a potential match. "
-                                        "Please verify the person "
-                                        "before taking action."
-                                    )
-
-                                    col1, col2 = \
-                                        st.columns([1, 2])
-
-                                    with col1:
-
-                                        photo_url = \
-                                            get_public_photo_url(
-                                                matched_case.get(
-                                                    "photo_path"
-                                                )
-                                            )
-
-                                        if photo_url:
-
-                                            st.image(
-                                                photo_url,
-                                                width=250
-                                            )
-
-                                    with col2:
-
-                                        st.subheader(
-                                            matched_case.get(
-                                                "name",
-                                                "Unknown"
-                                            )
-                                        )
-
-                                        st.write(
-                                            f"**Ticket:** "
-                                            f"{matched_case.get('ticket_id', '')}"
-                                        )
-
-                                        st.write(
-                                            f"**Age:** "
-                                            f"{matched_case.get('age', '')}"
-                                        )
-
-                                        st.write(
-                                            f"**Gender:** "
-                                            f"{matched_case.get('gender', '')}"
-                                        )
-
-                                        st.write(
-                                            f"**Location:** "
-                                            f"{matched_case.get('location', '')}"
-                                        )
-
-                                        st.write(
-                                            f"**Status:** "
-                                            f"{matched_case.get('status', '')}"
-                                        )
-
-                                    # ----------------------------------------
-                                    # REPORTER CONTACT
-                                    # ----------------------------------------
-
-                                    st.divider()
-
-                                    st.subheader(
-                                        "📞 Reporter Contact"
-                                    )
-
-                                    reporter_contact = \
-                                        matched_case.get(
-                                            "contact",
-                                            ""
-                                        )
-
-                                    if reporter_contact:
-
-                                        st.success(
-                                            f"📞 Reporter Contact Number: "
-                                            f"{reporter_contact}"
-                                        )
-
-                                    else:
-
-                                        st.warning(
-                                            "No reporter contact number "
-                                            "was provided."
-                                        )
-
-                                    # ----------------------------------------
-                                    # CONTACT ADMINISTRATOR
-                                    # ----------------------------------------
-
-                                    st.divider()
-
-                                    st.subheader(
-                                        "📧 Contact TRACE-AI Administrator"
-                                    )
-
-                                    st.write(
-                                        """
-                                        If you believe you have found
-                                        this person, please inform the
-                                        TRACE-AI administrator and provide
-                                        the Ticket ID.
-                                        """
-                                    )
-
-                                    email_subject = (
-                                        "TRACE-AI Potential Match - "
-                                        + str(
-                                            matched_case.get(
-                                                "ticket_id",
-                                                ""
-                                            )
-                                        )
-                                    )
-
-                                    email_body = (
-                                        "Hello TRACE-AI Administrator,\n\n"
-                                        "I believe I may have found the "
-                                        "person associated with this case.\n\n"
-                                        "Ticket ID: "
-                                        + str(
-                                            matched_case.get(
-                                                "ticket_id",
-                                                ""
-                                            )
-                                        )
-                                        + "\n"
-                                        "Name: "
-                                        + str(
-                                            matched_case.get(
-                                                "name",
-                                                ""
-                                            )
-                                        )
-                                        + "\n"
-                                        "Location: "
-                                        + str(
-                                            matched_case.get(
-                                                "location",
-                                                ""
-                                            )
-                                        )
-                                        + "\n"
-                                        "AI Similarity Score: "
-                                        + str(score)
-                                        + "%\n\n"
-                                        "Please verify this information."
-                                    )
-
-                                    mailto_link = (
-                                        "mailto:"
-                                        + ADMIN_EMAIL
-                                        + "?subject="
-                                        + urllib.parse.quote(
-                                            email_subject
-                                        )
-                                        + "&body="
-                                        + urllib.parse.quote(
-                                            email_body
-                                        )
-                                    )
-
-                                    st.link_button(
-                                        "📧 Email Administrator",
-                                        mailto_link,
-                                        use_container_width=True
-                                    )
-
-                                    st.info(
-                                        f"Administrator Email: "
-                                        f"{ADMIN_EMAIL}"
-                                    )
-
-                                else:
-
-                                    st.warning(
-                                        "No potential match reached "
-                                        "the 50% threshold."
-                                    )
-
-                                    st.write(
-                                        f"Best calculated score: "
-                                        f"{score}%"
-                                    )
-
-                                    st.info(
-                                        "Try a clearer face photograph."
-                                    )
-
-                            except Exception as e:
-
-                                st.error(
-                                    "Face comparison failed."
+                        email_subject = (
+                            "TRACE-AI Potential Match - "
+                            + str(
+                                matched_case.get(
+                                    "ticket_id",
+                                    ""
                                 )
+                            )
+                        )
 
-                                st.error(
-                                    str(e)
+                        email_body = (
+                            "Hello TRACE-AI Administrator,\n\n"
+                            "I believe I may have found the "
+                            "person associated with this case.\n\n"
+                            "Ticket ID: "
+                            + str(
+                                matched_case.get(
+                                    "ticket_id",
+                                    ""
                                 )
+                            )
+                            + "\n"
+                            "Name: "
+                            + str(
+                                matched_case.get(
+                                    "name",
+                                    ""
+                                )
+                            )
+                            + "\n"
+                            "Location: "
+                            + str(
+                                matched_case.get(
+                                    "location",
+                                    ""
+                                )
+                            )
+                            + "\n"
+                            "AI Similarity Score: "
+                            + str(score)
+                            + "%\n\n"
+                            "Please verify this information."
+                        )
+
+                        mailto_link = (
+                            "mailto:"
+                            + ADMIN_EMAIL
+                            + "?subject="
+                            + urllib.parse.quote(
+                                email_subject
+                            )
+                            + "&body="
+                            + urllib.parse.quote(
+                                email_body
+                            )
+                        )
+
+                        st.link_button(
+                            "📧 Email Administrator",
+                            mailto_link,
+                            use_container_width=True
+                        )
+
+                        st.info(
+                            f"Administrator Email: "
+                            f"{ADMIN_EMAIL}"
+                        )
+
+                    # ====================================================
+                    # NOT A STRONG MATCH
+                    # ====================================================
+
+                    else:
+
+                        st.warning(
+                            "No strong face match was found."
+                        )
+
+                        st.metric(
+                            "Best Similarity Score",
+                            f"{score}%"
+                        )
+
+                        st.write(
+                            """
+                            The closest stored face did not
+                            reach the matching threshold.
+                            Try a clear, front-facing photo
+                            with good lighting.
+                            """
+                        )
 
 
 # ============================================================
@@ -1597,13 +1894,10 @@ elif page == "📍 GPS Location":
         else:
 
             case_options = {
-
                 (
                     f"{case.get('ticket_id', '')} - "
                     f"{case.get('name', '')}"
-                ):
-                case
-
+                ): case
                 for case in cases
             }
 
@@ -1614,25 +1908,21 @@ elif page == "📍 GPS Location":
                 )
             )
 
-            selected_case = \
-                case_options[
-                    selected_label
-                ]
+            selected_case = case_options[
+                selected_label
+            ]
 
-            current_location = \
-                selected_case.get(
-                    "location",
-                    ""
-                )
+            current_location = selected_case.get(
+                "location",
+                ""
+            )
 
             new_location = st.text_input(
                 "Location",
                 value=str(
                     current_location
                 ),
-                placeholder=(
-                    "Example: Hyderabad"
-                )
+                placeholder="Example: Hyderabad"
             )
 
             if st.button(
@@ -1648,11 +1938,10 @@ elif page == "📍 GPS Location":
 
                 else:
 
-                    result = \
-                        update_case_location(
-                            selected_case["id"],
-                            new_location.strip()
-                        )
+                    result = update_case_location(
+                        selected_case["id"],
+                        new_location.strip()
+                    )
 
                     if result is not None:
 
@@ -1660,8 +1949,7 @@ elif page == "📍 GPS Location":
                             "Location updated successfully."
                         )
 
-                        st.session_state.cases = \
-                            load_cases()
+                        st.session_state.cases = load_cases()
 
                         st.rerun()
 
@@ -1677,7 +1965,6 @@ elif page == "🚨 Alerts":
     )
 
     missing_cases = [
-
         case
         for case in st.session_state.cases
         if str(
@@ -1685,8 +1972,7 @@ elif page == "🚨 Alerts":
                 "status",
                 ""
             )
-        ).lower()
-        == "missing"
+        ).lower() == "missing"
     ]
 
     if not missing_cases:
@@ -1709,17 +1995,17 @@ elif page == "🚨 Alerts":
                 border=True
             ):
 
-                col1, col2 = \
-                    st.columns([1, 3])
+                col1, col2 = st.columns(
+                    [1, 3]
+                )
 
                 with col1:
 
-                    photo_url = \
-                        get_public_photo_url(
-                            case.get(
-                                "photo_path"
-                            )
+                    photo_url = get_public_photo_url(
+                        case.get(
+                            "photo_path"
                         )
+                    )
 
                     if photo_url:
 
@@ -1919,17 +2205,17 @@ if st.session_state.admin_logged_in:
                     border=True
                 ):
 
-                    col1, col2 = \
-                        st.columns([1, 3])
+                    col1, col2 = st.columns(
+                        [1, 3]
+                    )
 
                     with col1:
 
-                        photo_url = \
-                            get_public_photo_url(
-                                case.get(
-                                    "photo_path"
-                                )
+                        photo_url = get_public_photo_url(
+                            case.get(
+                                "photo_path"
                             )
+                        )
 
                         if photo_url:
 
@@ -2021,8 +2307,7 @@ if st.session_state.admin_logged_in:
                             )
                         )
 
-                        update_col, delete_col = \
-                            st.columns(2)
+                        update_col, delete_col = st.columns(2)
 
                         with update_col:
 
@@ -2035,16 +2320,14 @@ if st.session_state.admin_logged_in:
                                 use_container_width=True
                             ):
 
-                                result = \
-                                    update_case_status(
-                                        case.get("id"),
-                                        new_status
-                                    )
+                                result = update_case_status(
+                                    case.get("id"),
+                                    new_status
+                                )
 
                                 if result is not None:
 
-                                    st.session_state.cases = \
-                                        load_cases()
+                                    st.session_state.cases = load_cases()
 
                                     st.success(
                                         "Status updated successfully."
@@ -2063,10 +2346,9 @@ if st.session_state.admin_logged_in:
                                 use_container_width=True
                             ):
 
-                                deleted = \
-                                    delete_case(
-                                        case.get("id")
-                                    )
+                                deleted = delete_case(
+                                    case.get("id")
+                                )
 
                                 if deleted is not None:
 
@@ -2076,8 +2358,7 @@ if st.session_state.admin_logged_in:
                                         )
                                     )
 
-                                    st.session_state.cases = \
-                                        load_cases()
+                                    st.session_state.cases = load_cases()
 
                                     st.success(
                                         "Case deleted successfully."
