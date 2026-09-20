@@ -36,7 +36,7 @@ BUCKET_NAME = "case-photos"
 # Keep administrator credentials in Streamlit Secrets.
 # Add ADMIN_USER and ADMIN_PASSWORD to Secrets.
 ADMIN_USER = st.secrets.get("ADMIN_USER", "admin")
-ADMIN_PASSWORD = traceai123
+ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "traceai123")
 ADMIN_EMAIL = "rkotha2@student.gitam.edu"
 
 # IMPORTANT:
