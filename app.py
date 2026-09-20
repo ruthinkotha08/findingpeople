@@ -41,11 +41,11 @@ ADMIN_EMAIL = "rkotha2@student.gitam.edu"
 
 # IMPORTANT:
 # SFace uses a cosine similarity value, not a percentage.
-# We use a stricter two-view test to reduce false positives.
+# Use the OpenCV SFace cosine reference threshold for the same-person decision.
 SFACE_REFERENCE_THRESHOLD = 0.363
-FACE_MATCH_THRESHOLD = 0.70
-SECOND_VIEW_THRESHOLD = 0.62
-ENSEMBLE_THRESHOLD = 0.65
+FACE_MATCH_THRESHOLD = 0.363
+SECOND_VIEW_THRESHOLD = 0.30
+ENSEMBLE_THRESHOLD = 0.363
 
 if "admin_logged_in" not in st.session_state:
     st.session_state.admin_logged_in = False
@@ -693,22 +693,22 @@ def compare_feature_sets(features1, features2, recognizer):
     best = scores[0]
     second = scores[1] if len(scores) > 1 else best
 
-    # The average of the two strongest comparisons prevents one
-    # unusually high augmented-view score from deciding the result.
-    ensemble = (best + second) / 2.0
+    # Keep the two strongest scores for diagnostics.
+    # The BEST score is used for the identity decision because the
+    # official OpenCV SFace threshold applies to a direct feature pair.
 
     return {
         "best": float(best),
         "second": float(second),
-        "ensemble": float(ensemble),
+        "ensemble": float((best + second) / 2.0),
     }
 
 
 # Project display thresholds.
 # IMPORTANT: these are decision/display thresholds, not scientific
 # probabilities of identity.
-SAME_PERSON_THRESHOLD = 0.68
-SIMILAR_FACE_THRESHOLD = 0.48
+SAME_PERSON_THRESHOLD = 0.363
+SIMILAR_FACE_THRESHOLD = 0.250
 
 
 def display_match_result(similarity, exact_photo=False):
@@ -791,14 +791,15 @@ def find_best_face_match(uploaded_image, uploaded_bytes, cases):
     Search every stored case using the official OpenCV SFace cosine
     matcher. Exact file equality is handled separately.
 
-    Prototype matching thresholds:
-      best cosine >= 0.50
-      second cosine >= 0.45
-      two-view ensemble >= 0.48
+    Matching uses OpenCV SFace cosine similarity.
 
-    These are similarity thresholds for this prototype, not a
-    guarantee of identity. They should be calibrated with known
-    same-person and different-person test photos before real-world use.
+    The official OpenCV example uses cosine >= 0.363 as its
+    same-identity reference threshold. We therefore use the BEST
+    valid SFace view for the same-person decision instead of forcing
+    an average of two views to cross a higher threshold. The other
+    view scores remain visible for diagnostics.
+
+    This is a prototype screening rule, not a probability of identity.
     """
     recognizer = load_sface_model()
 
@@ -898,7 +899,7 @@ def find_best_face_match(uploaded_image, uploaded_bytes, cases):
     ensemble = best_data["ensemble"]
 
     display_result = display_match_result(
-        ensemble,
+        best,
         exact_photo=False,
     )
 
@@ -1401,8 +1402,10 @@ elif page == "🤖 AI Face Search":
     )
 
     st.write(
-        "Matching rule: OpenCV SFace cosine best ≥ 0.50, "
-        "second view ≥ 0.45, and two-view ensemble ≥ 0.48."
+        "Matching rule: OpenCV SFace cosine BEST score ≥ 0.363 "
+        "is classified as a same-person match. Scores from 0.250 "
+        "to 0.362 are shown as similar-face results; below 0.250 "
+        "is shown as 0%."
     )
 
     search_photo = st.file_uploader(
