@@ -278,28 +278,28 @@ def load_yunet():
 
 @st.cache_resource
 def load_sface_model():
-    """Download and cache the OpenCV SFace recognizer."""
+    """Load the official OpenCV SFace model."""
     model_url = (
         "https://github.com/opencv/opencv_zoo/raw/main/models/"
         "face_recognition_sface/"
-        "face_recognition_sface_2021dec_int8bq.onnx"
+        "face_recognition_sface_2021dec.onnx"
     )
 
     model_path = os.path.join(
         tempfile.gettempdir(),
-        "traceai_sface_int8bq.onnx",
+        "traceai_sface_2021dec.onnx",
     )
 
     try:
         if (
             not os.path.exists(model_path)
-            or os.path.getsize(model_path) < 10000
+            or os.path.getsize(model_path) < 1000000
         ):
             request = urllib.request.Request(
                 model_url,
                 headers={"User-Agent": "Mozilla/5.0"},
             )
-            with urllib.request.urlopen(request, timeout=90) as response:
+            with urllib.request.urlopen(request, timeout=120) as response:
                 data = response.read()
 
             with open(model_path, "wb") as f:
@@ -565,27 +565,6 @@ def find_face(image):
 # ============================================================
 # SFACE FEATURE EXTRACTION
 # ============================================================
-def normalize_feature(feature):
-    if feature is None:
-        return None
-
-    try:
-        feature = np.asarray(
-            feature,
-            dtype=np.float32,
-        ).flatten()
-
-        norm = np.linalg.norm(feature)
-
-        if norm <= 1e-8:
-            return None
-
-        return feature / norm
-
-    except Exception:
-        return None
-
-
 def get_aligned_face(image, recognizer):
     detection = find_face(image)
 
@@ -597,20 +576,16 @@ def get_aligned_face(image, recognizer):
         face = detection["face"]
 
         if detection["method"] == "yunet":
-            aligned = recognizer.alignCrop(
-                work,
-                face,
-            )
+            aligned = recognizer.alignCrop(work, face)
 
             if aligned is None or aligned.size == 0:
                 return None
 
             return aligned
 
-        # Haar does not provide the five-point landmarks
-        # required by SFace, so use a clean square crop.
-        x, y, w, h = face
-
+        # Haar has no five-point landmarks. Use a square crop as a
+        # fallback only; YuNet is preferred for SFace recognition.
+        x, y, w, h = [int(v) for v in face]
         size = max(w, h)
         cx = x + w // 2
         cy = y + h // 2
@@ -625,65 +600,38 @@ def get_aligned_face(image, recognizer):
         if crop.size == 0:
             return None
 
-        return cv2.resize(
-            crop,
-            (112, 112),
-            interpolation=cv2.INTER_AREA,
-        )
+        return cv2.resize(crop, (112, 112), interpolation=cv2.INTER_AREA)
 
     except Exception:
         return None
 
 
-def extract_sface_views(image, recognizer):
-    """
-    Create several controlled views of the same detected face.
-
-    The final comparison uses multiple views instead of relying
-    on one crop. This improves robustness when the same person
-    appears with different lighting, distance or framing.
-    """
+def extract_sface_features(image, recognizer):
+    """Extract SFace features from a small set of controlled views."""
     if image is None or recognizer is None:
         return []
 
-    aligned = get_aligned_face(
-        image,
-        recognizer,
-    )
+    aligned = get_aligned_face(image, recognizer)
 
     if aligned is None:
         return []
 
     views = [aligned]
 
-    # Horizontal flip.
-    views.append(
-        cv2.flip(aligned, 1)
-    )
+    # A horizontal flip helps with small left/right framing differences.
+    views.append(cv2.flip(aligned, 1))
 
-    # Mild contrast adjustment.
+    # Mild illumination normalization.
     try:
-        lab = cv2.cvtColor(
-            aligned,
-            cv2.COLOR_BGR2LAB,
-        )
+        lab = cv2.cvtColor(aligned, cv2.COLOR_BGR2LAB)
         l_channel, a_channel, b_channel = cv2.split(lab)
-
-        clahe = cv2.createCLAHE(
-            clipLimit=1.5,
-            tileGridSize=(8, 8),
-        )
+        clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
         l_channel = clahe.apply(l_channel)
-
         enhanced = cv2.cvtColor(
-            cv2.merge(
-                (l_channel, a_channel, b_channel)
-            ),
+            cv2.merge((l_channel, a_channel, b_channel)),
             cv2.COLOR_LAB2BGR,
         )
-
         views.append(enhanced)
-
     except Exception:
         pass
 
@@ -692,48 +640,45 @@ def extract_sface_views(image, recognizer):
     for view in views:
         try:
             feature = recognizer.feature(view)
-            feature = normalize_feature(feature)
-
-            if feature is not None:
-                features.append(feature)
-
+            if feature is not None and feature.size:
+                # Keep the original OpenCV feature matrix. Do not replace
+                # it with a hand-made normalized dot product.
+                features.append(feature.copy())
         except Exception:
             pass
 
     return features
 
 
-def cosine_similarity(feature1, feature2):
-    if feature1 is None or feature2 is None:
+def sface_cosine(feature1, feature2, recognizer):
+    """Use OpenCV's own FaceRecognizerSF.match() implementation."""
+    if feature1 is None or feature2 is None or recognizer is None:
         return -1.0
 
     try:
-        a = normalize_feature(feature1)
-        b = normalize_feature(feature2)
-
-        if a is None or b is None:
-            return -1.0
-
-        return float(np.dot(a, b))
-
+        return float(
+            recognizer.match(
+                feature1,
+                feature2,
+                cv2.FaceRecognizerSF_FR_COSINE,
+            )
+        )
     except Exception:
         return -1.0
 
 
-def compare_feature_sets(features1, features2):
+def compare_feature_sets(features1, features2, recognizer):
     """
-    Compare all controlled views.
-
-    We use the best view and the second-best view. A result is
-    considered strong only when both views support it.
+    Compare SFace feature matrices using OpenCV's official cosine
+    matcher. We use the strongest and second-strongest view scores,
+    but never invent a score from a custom dot-product formula.
     """
     scores = []
 
     for f1 in features1:
         for f2 in features2:
-            score = cosine_similarity(f1, f2)
-
-            if score >= -1.0:
+            score = sface_cosine(f1, f2, recognizer)
+            if score >= 0.0:
                 scores.append(score)
 
     if not scores:
@@ -748,7 +693,8 @@ def compare_feature_sets(features1, features2):
     best = scores[0]
     second = scores[1] if len(scores) > 1 else best
 
-    # Average the two strongest independent comparisons.
+    # The average of the two strongest comparisons prevents one
+    # unusually high augmented-view score from deciding the result.
     ensemble = (best + second) / 2.0
 
     return {
@@ -760,29 +706,21 @@ def compare_feature_sets(features1, features2):
 
 def similarity_to_percentage(similarity):
     """
-    Display-only score.
-
-    This is NOT identity accuracy.
-    The percentage is normalized from the SFace reference
-    comparison point of 0.363 to 1.0.
+    Display the actual SFace cosine similarity as a percentage-like
+    value. This is a similarity score, NOT identity probability or
+    recognition accuracy.
     """
-    if similarity is None:
+    if similarity is None or similarity < 0:
         return 0.0
 
-    similarity = max(
-        -1.0,
-        min(1.0, float(similarity)),
-    )
+    similarity = max(0.0, min(1.0, float(similarity)))
+    return round(similarity * 100.0, 1)
 
-    score = (
-        (similarity - SFACE_REFERENCE_THRESHOLD)
-        / (1.0 - SFACE_REFERENCE_THRESHOLD)
-    ) * 100.0
 
-    return round(
-        max(0.0, min(100.0, score)),
-        1,
-    )
+def sha256_bytes(data):
+    if data is None:
+        return None
+    return hashlib.sha256(data).hexdigest()
 
 
 def exact_photo_match(uploaded_bytes, stored_bytes):
@@ -798,24 +736,23 @@ def exact_photo_match(uploaded_bytes, stored_bytes):
         and uploaded_hash == stored_hash
     )
 
+
 # ============================================================
 # FACE SEARCH
 # ============================================================
-def find_best_face_match(
-    uploaded_image,
-    uploaded_bytes,
-    cases,
-):
+def find_best_face_match(uploaded_image, uploaded_bytes, cases):
     """
-    Matching order:
+    Search every stored case using the official OpenCV SFace cosine
+    matcher. Exact file equality is handled separately.
 
-    1. Exact same file -> 100%.
-    2. SFace multi-view facial comparison.
+    Prototype matching thresholds:
+      best cosine >= 0.50
+      second cosine >= 0.45
+      two-view ensemble >= 0.48
 
-    The SFace result is accepted only when:
-      best score >= 0.70
-      second-view score >= 0.62
-      two-view ensemble >= 0.65
+    These are similarity thresholds for this prototype, not a
+    guarantee of identity. They should be calibrated with known
+    same-person and different-person test photos before real-world use.
     """
     recognizer = load_sface_model()
 
@@ -827,26 +764,17 @@ def find_best_face_match(
             "Please restart the app and try again.",
         )
 
-    # --------------------------------------------------------
-    # Exact file comparison.
-    # --------------------------------------------------------
+    # Exact same uploaded file.
     for case in cases:
         storage_path = case.get("photo_path")
-
         if not storage_path:
             continue
 
-        stored_bytes = download_image_bytes(
-            storage_path
-        )
-
+        stored_bytes = download_image_bytes(storage_path)
         if stored_bytes is None:
             continue
 
-        if exact_photo_match(
-            uploaded_bytes,
-            stored_bytes,
-        ):
+        if exact_photo_match(uploaded_bytes, stored_bytes):
             return (
                 case,
                 {
@@ -862,10 +790,7 @@ def find_best_face_match(
                 None,
             )
 
-    # --------------------------------------------------------
-    # Uploaded image features.
-    # --------------------------------------------------------
-    uploaded_features = extract_sface_views(
+    uploaded_features = extract_sface_features(
         uploaded_image,
         recognizer,
     )
@@ -874,32 +799,24 @@ def find_best_face_match(
         return (
             None,
             None,
-            "No usable face could be extracted from the "
-            "uploaded photo. Please use a clear photo where "
-            "the face is visible.",
+            "No usable face could be extracted from the uploaded "
+            "photo. Please use a clear photo where the face is visible.",
         )
 
     best_case = None
     best_data = None
     usable_photos = 0
 
-    # --------------------------------------------------------
-    # Compare with every case.
-    # --------------------------------------------------------
     for case in cases:
         storage_path = case.get("photo_path")
-
         if not storage_path:
             continue
 
-        stored_image = download_image(
-            storage_path
-        )
-
+        stored_image = download_image(storage_path)
         if stored_image is None:
             continue
 
-        stored_features = extract_sface_views(
+        stored_features = extract_sface_features(
             stored_image,
             recognizer,
         )
@@ -912,12 +829,12 @@ def find_best_face_match(
         comparison = compare_feature_sets(
             uploaded_features,
             stored_features,
+            recognizer,
         )
 
         if (
             best_data is None
-            or comparison["ensemble"]
-            > best_data["ensemble"]
+            or comparison["ensemble"] > best_data["ensemble"]
         ):
             best_case = case
             best_data = comparison
@@ -926,32 +843,34 @@ def find_best_face_match(
         return (
             None,
             None,
-            "No usable case photographs were available "
-            "for face comparison.",
+            "No usable case photographs were available for face comparison.",
         )
 
-    similarity = best_data["ensemble"]
+    best = best_data["best"]
+    second = best_data["second"]
+    ensemble = best_data["ensemble"]
 
     is_match = (
-        best_data["best"] >= FACE_MATCH_THRESHOLD
-        and best_data["second"] >= SECOND_VIEW_THRESHOLD
-        and best_data["ensemble"] >= ENSEMBLE_THRESHOLD
+        best >= 0.50
+        and second >= 0.45
+        and ensemble >= 0.48
     )
 
     return (
         best_case,
         {
-            "similarity": similarity,
-            "score": similarity_to_percentage(similarity),
-            "best": best_data["best"],
-            "second": best_data["second"],
-            "ensemble": best_data["ensemble"],
+            "similarity": ensemble,
+            "score": similarity_to_percentage(ensemble),
+            "best": best,
+            "second": second,
+            "ensemble": ensemble,
             "usable_photos": usable_photos,
             "exact_photo": False,
             "is_match": is_match,
         },
         None,
     )
+
 
 # ============================================================
 # IMAGE DOWNLOAD
@@ -1435,8 +1354,8 @@ elif page == "🤖 AI Face Search":
     )
 
     st.write(
-        "Matching rule: best view ≥ 0.70, second view ≥ 0.62, "
-        "and two-view ensemble ≥ 0.65."
+        "Matching rule: OpenCV SFace cosine best ≥ 0.50, "
+        "second view ≥ 0.45, and two-view ensemble ≥ 0.48."
     )
 
     search_photo = st.file_uploader(
@@ -1935,8 +1854,8 @@ elif page == "🔐 Admin Login":
             use_container_width=True,
         ):
             if (
-                username == ADMIN_USER
-                and password == ADMIN_PASSWORD
+                username.strip() == str(ADMIN_USER).strip()
+                and password.strip() == str(ADMIN_PASSWORD).strip()
             ):
                 st.session_state.admin_logged_in = True
 
