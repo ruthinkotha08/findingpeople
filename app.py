@@ -704,17 +704,63 @@ def compare_feature_sets(features1, features2, recognizer):
     }
 
 
-def similarity_to_percentage(similarity):
+# Project display thresholds.
+# IMPORTANT: these are decision/display thresholds, not scientific
+# probabilities of identity.
+SAME_PERSON_THRESHOLD = 0.68
+SIMILAR_FACE_THRESHOLD = 0.48
+
+
+def display_match_result(similarity, exact_photo=False):
     """
-    Display the actual SFace cosine similarity as a percentage-like
-    value. This is a similarity score, NOT identity probability or
-    recognition accuracy.
+    Project display rule:
+
+    - Exact same file -> 100% MATCH.
+    - Facial similarity at/above SAME_PERSON_THRESHOLD ->
+      100% MATCH (the system classifies it as the same-person match).
+    - Lower but above SIMILAR_FACE_THRESHOLD -> show the actual
+      similarity score as "similar face features".
+    - Below SIMILAR_FACE_THRESHOLD -> 0% / no useful match.
+
+    The displayed 100% means "the matching system classified this
+    case as a same-person match"; it is NOT a scientific accuracy
+    probability.
     """
+    if exact_photo:
+        return {
+            "display_score": 100.0,
+            "result_type": "same",
+            "is_match": True,
+        }
+
     if similarity is None or similarity < 0:
-        return 0.0
+        return {
+            "display_score": 0.0,
+            "result_type": "none",
+            "is_match": False,
+        }
 
     similarity = max(0.0, min(1.0, float(similarity)))
-    return round(similarity * 100.0, 1)
+
+    if similarity >= SAME_PERSON_THRESHOLD:
+        return {
+            "display_score": 100.0,
+            "result_type": "same",
+            "is_match": True,
+        }
+
+    if similarity >= SIMILAR_FACE_THRESHOLD:
+        return {
+            "display_score": round(similarity * 100.0, 1),
+            "result_type": "similar",
+            "is_match": False,
+        }
+
+    return {
+        "display_score": 0.0,
+        "result_type": "none",
+        "is_match": False,
+    }
 
 
 def sha256_bytes(data):
@@ -785,6 +831,7 @@ def find_best_face_match(uploaded_image, uploaded_bytes, cases):
                     "ensemble": 1.0,
                     "usable_photos": 1,
                     "exact_photo": True,
+                    "result_type": "same",
                     "is_match": True,
                 },
                 None,
@@ -850,23 +897,23 @@ def find_best_face_match(uploaded_image, uploaded_bytes, cases):
     second = best_data["second"]
     ensemble = best_data["ensemble"]
 
-    is_match = (
-        best >= 0.50
-        and second >= 0.45
-        and ensemble >= 0.48
+    display_result = display_match_result(
+        ensemble,
+        exact_photo=False,
     )
 
     return (
         best_case,
         {
             "similarity": ensemble,
-            "score": similarity_to_percentage(ensemble),
+            "score": display_result["display_score"],
+            "result_type": display_result["result_type"],
             "best": best,
             "second": second,
             "ensemble": ensemble,
             "usable_photos": usable_photos,
             "exact_photo": False,
-            "is_match": is_match,
+            "is_match": display_result["is_match"],
         },
         None,
     )
@@ -1443,81 +1490,102 @@ elif page == "🤖 AI Face Search":
                         f"**{usable_photos}**"
                     )
 
-                    if exact_photo:
+                    result_type = match_data.get(
+                        "result_type",
+                        "none",
+                    )
+
+                    if exact_photo or result_type == "same":
                         st.success(
-                            "✅ Exact same photo found in "
-                            "the case records."
+                            "✅ SAME PERSON MATCH"
                         )
 
                         st.metric(
-                            "Photo Match",
+                            "Match Accuracy",
                             "100%",
                         )
 
-                    elif is_match:
-                        st.success(
-                            "✅ Strong potential face match found."
-                        )
-
-                        st.metric(
-                            "AI Similarity Score",
-                            f"{score}%",
-                        )
+                        if not exact_photo:
+                            st.caption(
+                                "100% here means TRACE-AI classified "
+                                "the facial comparison as a same-person "
+                                "match. It is not a scientific probability "
+                                "of identity."
+                            )
 
                         with st.expander(
-                            "Show technical matching scores"
+                            "Show technical SFace score"
                         ):
                             st.write(
-                                f"Best view cosine: "
+                                f"Best cosine: "
                                 f"{best_score:.4f}"
                             )
                             st.write(
-                                f"Second view cosine: "
+                                f"Second cosine: "
                                 f"{second_score:.4f}"
                             )
                             st.write(
-                                f"Two-view ensemble: "
+                                f"Ensemble cosine: "
                                 f"{ensemble:.4f}"
                             )
 
+                    elif result_type == "similar":
                         st.warning(
-                            "This is a potential match, not proof "
-                            "of identity. Please verify the person "
-                            "before taking action."
-                        )
-
-                    else:
-                        st.warning(
-                            "❌ No strong face match was found."
+                            "🟡 SIMILAR FACE FEATURES"
                         )
 
                         st.metric(
-                            "Best Similarity Score",
+                            "Face Similarity",
                             f"{score}%",
                         )
-
-                        with st.expander(
-                            "Show technical matching scores"
-                        ):
-                            st.write(
-                                f"Best view cosine: "
-                                f"{best_score:.4f}"
-                            )
-                            st.write(
-                                f"Second view cosine: "
-                                f"{second_score:.4f}"
-                            )
-                            st.write(
-                                f"Two-view ensemble: "
-                                f"{ensemble:.4f}"
-                            )
 
                         st.write(
-                            "The closest stored face did not "
-                            "pass all three matching conditions. "
-                            "Reporter contact information is not "
-                            "shown for a result below the threshold."
+                            "The uploaded face has similar features "
+                            "to the closest case, but it did not reach "
+                            "the same-person threshold."
                         )
+
+                        with st.expander(
+                            "Show technical SFace score"
+                        ):
+                            st.write(
+                                f"Best cosine: "
+                                f"{best_score:.4f}"
+                            )
+                            st.write(
+                                f"Second cosine: "
+                                f"{second_score:.4f}"
+                            )
+                            st.write(
+                                f"Ensemble cosine: "
+                                f"{ensemble:.4f}"
+                            )
+
+                    else:
+                        st.error(
+                            "❌ NO SIGNIFICANT FACE MATCH"
+                        )
+
+                        st.metric(
+                            "Face Similarity",
+                            "0%",
+                        )
+
+                        with st.expander(
+                            "Show technical SFace score"
+                        ):
+                            st.write(
+                                f"Best cosine: "
+                                f"{best_score:.4f}"
+                            )
+                            st.write(
+                                f"Second cosine: "
+                                f"{second_score:.4f}"
+                            )
+                            st.write(
+                                f"Ensemble cosine: "
+                                f"{ensemble:.4f}"
+                            )
 
                     # ------------------------------------------------
                     # Only show case details/contact for a strong match.
@@ -1623,7 +1691,7 @@ elif page == "🤖 AI Face Search":
                             f"{matched_case.get('name', '')}\n"
                             f"Location: "
                             f"{matched_case.get('location', '')}\n"
-                            f"AI Similarity Score: {score}%\n\n"
+                            f"Face Match Result: {score}%\n\n"
                             "Please verify this information."
                         )
 
