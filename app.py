@@ -10,7 +10,14 @@ from datetime import datetime
 from uuid import uuid4
 from supabase import create_client, Client
 
-st.set_page_config(page_title="TRACE-AI", page_icon="🔎", layout="wide")
+# ============================================================
+# PAGE
+# ============================================================
+st.set_page_config(
+    page_title="TRACE-AI",
+    page_icon="🔎",
+    layout="wide",
+)
 
 # ============================================================
 # SUPABASE / SETTINGS
@@ -25,13 +32,20 @@ except Exception as e:
     st.stop()
 
 BUCKET_NAME = "case-photos"
-ADMIN_USER = "admin"
-ADMIN_PASSWORD = "Swarajyam@2014"
+
+# Keep administrator credentials in Streamlit Secrets.
+# Add ADMIN_USER and ADMIN_PASSWORD to Secrets.
+ADMIN_USER = st.secrets.get("ADMIN_USER", "admin")
+ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "traceai123")
 ADMIN_EMAIL = "rkotha2@student.gitam.edu"
 
-# SFace cosine similarity threshold.
-# This is a similarity threshold, NOT identity accuracy.
-FACE_MATCH_THRESHOLD = 0.75
+# IMPORTANT:
+# SFace uses a cosine similarity value, not a percentage.
+# We use a stricter two-view test to reduce false positives.
+SFACE_REFERENCE_THRESHOLD = 0.363
+FACE_MATCH_THRESHOLD = 0.70
+SECOND_VIEW_THRESHOLD = 0.62
+ENSEMBLE_THRESHOLD = 0.65
 
 if "admin_logged_in" not in st.session_state:
     st.session_state.admin_logged_in = False
@@ -131,7 +145,6 @@ def delete_case(case_id):
         st.error(str(e))
         return None
 
-
 # ============================================================
 # STORAGE
 # ============================================================
@@ -141,7 +154,9 @@ def upload_photo(uploaded_file, ticket_id):
         if extension not in {"jpg", "jpeg", "png", "webp"}:
             extension = "jpg"
 
-        storage_path = f"cases/{ticket_id}_{uuid4().hex[:10]}.{extension}"
+        storage_path = (
+            f"cases/{ticket_id}_{uuid4().hex[:10]}.{extension}"
+        )
 
         supabase.storage.from_(BUCKET_NAME).upload(
             storage_path,
@@ -153,6 +168,7 @@ def upload_photo(uploaded_file, ticket_id):
         )
 
         return storage_path
+
     except Exception as e:
         st.error("Photo upload failed.")
         st.error(str(e))
@@ -174,13 +190,14 @@ def get_public_photo_url(storage_path):
         return None
 
     try:
-        return supabase.storage.from_(BUCKET_NAME).get_public_url(storage_path)
+        return supabase.storage.from_(BUCKET_NAME).get_public_url(
+            storage_path
+        )
     except Exception:
         return None
 
 
 def download_image_bytes(storage_path):
-    """Download the original stored bytes from Supabase Storage."""
     url = get_public_photo_url(storage_path)
 
     if not url:
@@ -192,7 +209,7 @@ def download_image_bytes(storage_path):
             headers={"User-Agent": "Mozilla/5.0"},
         )
 
-        with urllib.request.urlopen(request, timeout=20) as response:
+        with urllib.request.urlopen(request, timeout=30) as response:
             return response.read()
 
     except Exception:
@@ -213,16 +230,14 @@ def image_from_bytes(data):
 def sha256_bytes(data):
     if data is None:
         return None
-
     return hashlib.sha256(data).hexdigest()
-
 
 # ============================================================
 # FACE MODELS
 # ============================================================
 @st.cache_resource
 def load_yunet():
-    """Download and cache YuNet face detector."""
+    """Download and cache the OpenCV YuNet face detector."""
     model_url = (
         "https://github.com/opencv/opencv_zoo/raw/main/models/"
         "face_detection_yunet/face_detection_yunet_2023mar.onnx"
@@ -234,19 +249,21 @@ def load_yunet():
     )
 
     try:
-        if not os.path.exists(model_path) or os.path.getsize(model_path) < 10000:
+        if (
+            not os.path.exists(model_path)
+            or os.path.getsize(model_path) < 10000
+        ):
             request = urllib.request.Request(
                 model_url,
                 headers={"User-Agent": "Mozilla/5.0"},
             )
-
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with urllib.request.urlopen(request, timeout=90) as response:
                 data = response.read()
 
             with open(model_path, "wb") as f:
                 f.write(data)
 
-        detector = cv2.FaceDetectorYN_create(
+        return cv2.FaceDetectorYN_create(
             model_path,
             "",
             (320, 320),
@@ -255,33 +272,34 @@ def load_yunet():
             5000,
         )
 
-        return detector
-
     except Exception:
         return None
 
 
 @st.cache_resource
 def load_sface_model():
-    """Download and cache OpenCV SFace recognizer."""
+    """Download and cache the OpenCV SFace recognizer."""
     model_url = (
         "https://github.com/opencv/opencv_zoo/raw/main/models/"
-        "face_recognition_sface/face_recognition_sface_2021dec_int8bq.onnx"
+        "face_recognition_sface/"
+        "face_recognition_sface_2021dec_int8bq.onnx"
     )
 
     model_path = os.path.join(
         tempfile.gettempdir(),
-        "traceai_sface.onnx",
+        "traceai_sface_int8bq.onnx",
     )
 
     try:
-        if not os.path.exists(model_path) or os.path.getsize(model_path) < 10000:
+        if (
+            not os.path.exists(model_path)
+            or os.path.getsize(model_path) < 10000
+        ):
             request = urllib.request.Request(
                 model_url,
                 headers={"User-Agent": "Mozilla/5.0"},
             )
-
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with urllib.request.urlopen(request, timeout=90) as response:
                 data = response.read()
 
             with open(model_path, "wb") as f:
@@ -295,43 +313,33 @@ def load_sface_model():
 
 @st.cache_resource
 def load_haar_detectors():
-    """Fallback Haar detectors."""
     frontal = None
     profile = None
 
     try:
-        frontal_path = (
+        frontal = cv2.CascadeClassifier(
             cv2.data.haarcascades
             + "haarcascade_frontalface_default.xml"
         )
-
-        frontal = cv2.CascadeClassifier(frontal_path)
-
         if frontal.empty():
             frontal = None
-
     except Exception:
         frontal = None
 
     try:
-        profile_path = (
+        profile = cv2.CascadeClassifier(
             cv2.data.haarcascades
             + "haarcascade_profileface.xml"
         )
-
-        profile = cv2.CascadeClassifier(profile_path)
-
         if profile.empty():
             profile = None
-
     except Exception:
         profile = None
 
     return frontal, profile
 
-
 # ============================================================
-# IMAGE / FACE DETECTION
+# IMAGE HELPERS
 # ============================================================
 def prepare_image(image):
     if image is None:
@@ -343,12 +351,10 @@ def prepare_image(image):
         return image
 
     h, w = image.shape[:2]
-
     max_side = 1600
 
     if max(h, w) > max_side:
         scale = max_side / float(max(h, w))
-
         image = cv2.resize(
             image,
             None,
@@ -361,58 +367,30 @@ def prepare_image(image):
 
 
 def make_enhanced_image(image):
-    """Create a contrast-enhanced version for difficult photos."""
     if image is None:
         return None
 
     try:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+        l_channel, a_channel, b_channel = cv2.split(lab)
 
         clahe = cv2.createCLAHE(
             clipLimit=2.0,
             tileGridSize=(8, 8),
         )
+        l_channel = clahe.apply(l_channel)
 
-        enhanced_gray = clahe.apply(gray)
+        enhanced = cv2.merge(
+            (l_channel, a_channel, b_channel)
+        )
 
         return cv2.cvtColor(
-            enhanced_gray,
-            cv2.COLOR_GRAY2BGR,
+            enhanced,
+            cv2.COLOR_LAB2BGR,
         )
 
     except Exception:
         return image
-
-
-def rotate_image(image, angle):
-    if image is None:
-        return None
-
-    h, w = image.shape[:2]
-    center = (w / 2.0, h / 2.0)
-
-    matrix = cv2.getRotationMatrix2D(
-        center,
-        angle,
-        1.0,
-    )
-
-    cos_value = abs(matrix[0, 0])
-    sin_value = abs(matrix[0, 1])
-
-    new_w = int((h * sin_value) + (w * cos_value))
-    new_h = int((h * cos_value) + (w * sin_value))
-
-    matrix[0, 2] += (new_w / 2) - center[0]
-    matrix[1, 2] += (new_h / 2) - center[1]
-
-    return cv2.warpAffine(
-        image,
-        matrix,
-        (new_w, new_h),
-        flags=cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_REPLICATE,
-    )
 
 
 def detect_with_yunet(image, detector):
@@ -421,44 +399,43 @@ def detect_with_yunet(image, detector):
 
     try:
         image = prepare_image(image)
-
         h, w = image.shape[:2]
 
         detector.setInputSize((w, h))
-
         _, faces = detector.detect(image)
 
         if faces is None or len(faces) == 0:
             return None
 
-        valid_faces = []
+        valid = []
 
         for face in faces:
             x, y, fw, fh = face[:4]
 
-            if fw < 30 or fh < 30:
+            if fw < 40 or fh < 40:
                 continue
 
             confidence = float(face[14])
+            area = float(fw * fh)
 
-            valid_faces.append(
+            valid.append(
                 (
                     confidence,
-                    float(fw * fh),
+                    area,
                     face.astype(np.float32),
                 )
             )
 
-        if not valid_faces:
+        if not valid:
             return None
 
-        # Prefer confidence, then face area.
-        valid_faces.sort(
+        # Prefer detection confidence, then face size.
+        valid.sort(
             key=lambda item: (item[0], item[1]),
             reverse=True,
         )
 
-        return image, valid_faces[0][2]
+        return image, valid[0][2]
 
     except Exception:
         return None
@@ -471,14 +448,11 @@ def detect_with_haar(image, frontal, profile):
     image = prepare_image(image)
 
     try:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-        clahe = cv2.createCLAHE(
-            clipLimit=2.0,
-            tileGridSize=(8, 8),
+        gray = cv2.cvtColor(
+            image,
+            cv2.COLOR_BGR2GRAY,
         )
 
-        gray = clahe.apply(gray)
         gray = cv2.equalizeHist(gray)
 
     except Exception:
@@ -487,12 +461,12 @@ def detect_with_haar(image, frontal, profile):
     candidates = []
 
     settings = [
-        (frontal, 1.03, 3),
-        (frontal, 1.05, 3),
-        (frontal, 1.08, 2),
-        (frontal, 1.10, 2),
-        (profile, 1.05, 3),
-        (profile, 1.08, 2),
+        (frontal, 1.03, 4),
+        (frontal, 1.05, 4),
+        (frontal, 1.08, 3),
+        (frontal, 1.10, 3),
+        (profile, 1.05, 4),
+        (profile, 1.08, 3),
     ]
 
     for cascade, scale_factor, neighbors in settings:
@@ -504,7 +478,7 @@ def detect_with_haar(image, frontal, profile):
                 gray,
                 scaleFactor=scale_factor,
                 minNeighbors=neighbors,
-                minSize=(40, 40),
+                minSize=(50, 50),
             )
 
             for x, y, w, h in boxes:
@@ -523,34 +497,36 @@ def detect_with_haar(image, frontal, profile):
     if not candidates:
         return None
 
-    x, y, w, h = max(
+    # The largest face is normally the subject.
+    box = max(
         candidates,
-        key=lambda box: box[2] * box[3],
+        key=lambda b: b[2] * b[3],
     )
 
-    return image, (x, y, w, h)
+    return image, box
 
 
 def find_face(image):
     """
-    Try several YuNet passes first, then multiple Haar passes.
-    This is deliberately more tolerant of lighting, image size,
-    and small rotations.
+    Face detection:
+    1. YuNet original
+    2. YuNet enhanced
+    3. Haar fallback
+
+    We intentionally do not rotate the image before recognition.
+    Rotating can cause the recognizer to compare a transformed
+    face crop rather than the original aligned face.
     """
     if image is None:
         return None
 
     image = prepare_image(image)
-
     yunet = load_yunet()
 
-    versions = [
+    for version_name, version_image in (
         ("original", image),
         ("enhanced", make_enhanced_image(image)),
-    ]
-
-    # First try without rotation.
-    for version_name, version_image in versions:
+    ):
         result = detect_with_yunet(
             version_image,
             yunet,
@@ -561,78 +537,56 @@ def find_face(image):
                 "method": "yunet",
                 "image": result[0],
                 "face": result[1],
-                "angle": 0,
                 "version": version_name,
             }
 
-    # Try small rotations.
-    for angle in (-10, 10, -20, 20, -30, 30):
-        rotated = rotate_image(image, angle)
-
-        for version_name, version_image in (
-            ("original", rotated),
-            ("enhanced", make_enhanced_image(rotated)),
-        ):
-            result = detect_with_yunet(
-                version_image,
-                yunet,
-            )
-
-            if result is not None:
-                return {
-                    "method": "yunet",
-                    "image": result[0],
-                    "face": result[1],
-                    "angle": angle,
-                    "version": version_name,
-                }
-
-    # Haar fallback.
     frontal, profile = load_haar_detectors()
 
-    best = None
-    best_area = 0
-
-    for angle in (0, -10, 10, -20, 20, -30, 30):
-        rotated = (
-            image
-            if angle == 0
-            else rotate_image(image, angle)
+    for version_image in (
+        image,
+        make_enhanced_image(image),
+    ):
+        result = detect_with_haar(
+            version_image,
+            frontal,
+            profile,
         )
 
-        for version_image in (
-            rotated,
-            make_enhanced_image(rotated),
-        ):
-            result = detect_with_haar(
-                version_image,
-                frontal,
-                profile,
-            )
+        if result is not None:
+            return {
+                "method": "haar",
+                "image": result[0],
+                "face": result[1],
+                "version": "haar",
+            }
 
-            if result is not None:
-                _, box = result
+    return None
 
-                area = box[2] * box[3]
-
-                if area > best_area:
-                    best_area = area
-
-                    best = {
-                        "method": "haar",
-                        "image": result[0],
-                        "face": box,
-                        "angle": angle,
-                        "version": "haar",
-                    }
-
-    return best
-
-
-def extract_sface_feature(image, recognizer):
-    if image is None or recognizer is None:
+# ============================================================
+# SFACE FEATURE EXTRACTION
+# ============================================================
+def normalize_feature(feature):
+    if feature is None:
         return None
 
+    try:
+        feature = np.asarray(
+            feature,
+            dtype=np.float32,
+        ).flatten()
+
+        norm = np.linalg.norm(feature)
+
+        if norm <= 1e-8:
+            return None
+
+        return feature / norm
+
+    except Exception:
+        return None
+
+
+def get_aligned_face(image, recognizer):
     detection = find_face(image)
 
     if detection is None:
@@ -651,50 +605,102 @@ def extract_sface_feature(image, recognizer):
             if aligned is None or aligned.size == 0:
                 return None
 
-            feature = recognizer.feature(aligned)
+            return aligned
 
-        else:
-            x, y, w, h = face
+        # Haar does not provide the five-point landmarks
+        # required by SFace, so use a clean square crop.
+        x, y, w, h = face
 
-            # Add a small amount of surrounding context.
-            mx = int(w * 0.18)
-            my = int(h * 0.22)
+        size = max(w, h)
+        cx = x + w // 2
+        cy = y + h // 2
 
-            x1 = max(0, x - mx)
-            y1 = max(0, y - my)
-            x2 = min(work.shape[1], x + w + mx)
-            y2 = min(work.shape[0], y + h + my)
+        x1 = max(0, cx - size // 2)
+        y1 = max(0, cy - size // 2)
+        x2 = min(work.shape[1], x1 + size)
+        y2 = min(work.shape[0], y1 + size)
 
-            crop = work[y1:y2, x1:x2]
+        crop = work[y1:y2, x1:x2]
 
-            if crop.size == 0:
-                return None
-
-            crop = cv2.resize(
-                crop,
-                (112, 112),
-                interpolation=cv2.INTER_AREA,
-            )
-
-            feature = recognizer.feature(crop)
-
-        if feature is None:
+        if crop.size == 0:
             return None
 
-        feature = np.asarray(
-            feature,
-            dtype=np.float32,
-        ).flatten()
-
-        norm = np.linalg.norm(feature)
-
-        if norm <= 1e-8:
-            return None
-
-        return feature / norm
+        return cv2.resize(
+            crop,
+            (112, 112),
+            interpolation=cv2.INTER_AREA,
+        )
 
     except Exception:
         return None
+
+
+def extract_sface_views(image, recognizer):
+    """
+    Create several controlled views of the same detected face.
+
+    The final comparison uses multiple views instead of relying
+    on one crop. This improves robustness when the same person
+    appears with different lighting, distance or framing.
+    """
+    if image is None or recognizer is None:
+        return []
+
+    aligned = get_aligned_face(
+        image,
+        recognizer,
+    )
+
+    if aligned is None:
+        return []
+
+    views = [aligned]
+
+    # Horizontal flip.
+    views.append(
+        cv2.flip(aligned, 1)
+    )
+
+    # Mild contrast adjustment.
+    try:
+        lab = cv2.cvtColor(
+            aligned,
+            cv2.COLOR_BGR2LAB,
+        )
+        l_channel, a_channel, b_channel = cv2.split(lab)
+
+        clahe = cv2.createCLAHE(
+            clipLimit=1.5,
+            tileGridSize=(8, 8),
+        )
+        l_channel = clahe.apply(l_channel)
+
+        enhanced = cv2.cvtColor(
+            cv2.merge(
+                (l_channel, a_channel, b_channel)
+            ),
+            cv2.COLOR_LAB2BGR,
+        )
+
+        views.append(enhanced)
+
+    except Exception:
+        pass
+
+    features = []
+
+    for view in views:
+        try:
+            feature = recognizer.feature(view)
+            feature = normalize_feature(feature)
+
+            if feature is not None:
+                features.append(feature)
+
+        except Exception:
+            pass
+
+    return features
 
 
 def cosine_similarity(feature1, feature2):
@@ -702,42 +708,76 @@ def cosine_similarity(feature1, feature2):
         return -1.0
 
     try:
-        a = np.asarray(
-            feature1,
-            dtype=np.float32,
-        ).flatten()
+        a = normalize_feature(feature1)
+        b = normalize_feature(feature2)
 
-        b = np.asarray(
-            feature2,
-            dtype=np.float32,
-        ).flatten()
-
-        if len(a) != len(b):
+        if a is None or b is None:
             return -1.0
 
-        denom = np.linalg.norm(a) * np.linalg.norm(b)
-
-        if denom <= 1e-8:
-            return -1.0
-
-        return float(np.dot(a, b) / denom)
+        return float(np.dot(a, b))
 
     except Exception:
         return -1.0
 
 
+def compare_feature_sets(features1, features2):
+    """
+    Compare all controlled views.
+
+    We use the best view and the second-best view. A result is
+    considered strong only when both views support it.
+    """
+    scores = []
+
+    for f1 in features1:
+        for f2 in features2:
+            score = cosine_similarity(f1, f2)
+
+            if score >= -1.0:
+                scores.append(score)
+
+    if not scores:
+        return {
+            "best": -1.0,
+            "second": -1.0,
+            "ensemble": -1.0,
+        }
+
+    scores.sort(reverse=True)
+
+    best = scores[0]
+    second = scores[1] if len(scores) > 1 else best
+
+    # Average the two strongest independent comparisons.
+    ensemble = (best + second) / 2.0
+
+    return {
+        "best": float(best),
+        "second": float(second),
+        "ensemble": float(ensemble),
+    }
+
+
 def similarity_to_percentage(similarity):
     """
-    Display-only similarity score.
-    It is NOT identity accuracy.
+    Display-only score.
+
+    This is NOT identity accuracy.
+    The percentage is normalized from the SFace reference
+    comparison point of 0.363 to 1.0.
     """
+    if similarity is None:
+        return 0.0
+
     similarity = max(
         -1.0,
         min(1.0, float(similarity)),
     )
 
-    # SFace cosine scores are converted only for display.
-    score = ((similarity - 0.20) / 0.80) * 100.0
+    score = (
+        (similarity - SFACE_REFERENCE_THRESHOLD)
+        / (1.0 - SFACE_REFERENCE_THRESHOLD)
+    ) * 100.0
 
     return round(
         max(0.0, min(100.0, score)),
@@ -746,12 +786,6 @@ def similarity_to_percentage(similarity):
 
 
 def exact_photo_match(uploaded_bytes, stored_bytes):
-    """
-    Exact binary comparison.
-
-    If the user uploads the exact same file that is stored
-    in Supabase Storage, the SHA-256 values will be identical.
-    """
     if uploaded_bytes is None or stored_bytes is None:
         return False
 
@@ -764,18 +798,24 @@ def exact_photo_match(uploaded_bytes, stored_bytes):
         and uploaded_hash == stored_hash
     )
 
-
+# ============================================================
+# FACE SEARCH
+# ============================================================
 def find_best_face_match(
     uploaded_image,
     uploaded_bytes,
     cases,
 ):
     """
-    Find the best case.
+    Matching order:
 
-    Priority:
-    1. Exact same photo.
-    2. SFace facial similarity.
+    1. Exact same file -> 100%.
+    2. SFace multi-view facial comparison.
+
+    The SFace result is accepted only when:
+      best score >= 0.70
+      second-view score >= 0.62
+      two-view ensemble >= 0.65
     """
     recognizer = load_sface_model()
 
@@ -784,11 +824,11 @@ def find_best_face_match(
             None,
             None,
             "The OpenCV SFace model could not be loaded. "
-            "Please try again.",
+            "Please restart the app and try again.",
         )
 
     # --------------------------------------------------------
-    # FIRST: exact stored-photo comparison.
+    # Exact file comparison.
     # --------------------------------------------------------
     for case in cases:
         storage_path = case.get("photo_path")
@@ -812,46 +852,39 @@ def find_best_face_match(
                 {
                     "similarity": 1.0,
                     "score": 100.0,
+                    "best": 1.0,
+                    "second": 1.0,
+                    "ensemble": 1.0,
                     "usable_photos": 1,
                     "exact_photo": True,
+                    "is_match": True,
                 },
                 None,
             )
 
     # --------------------------------------------------------
-    # SECOND: face detection.
+    # Uploaded image features.
     # --------------------------------------------------------
-    detection = find_face(uploaded_image)
-
-    if detection is None:
-        return (
-            None,
-            None,
-            "No usable face was detected in the uploaded photo. "
-            "The photo itself may be valid, but the face detector "
-            "could not locate a face. Please try a clear, front-facing "
-            "photo with the face larger in the frame.",
-        )
-
-    uploaded_feature = extract_sface_feature(
+    uploaded_features = extract_sface_views(
         uploaded_image,
         recognizer,
     )
 
-    if uploaded_feature is None:
+    if not uploaded_features:
         return (
             None,
             None,
-            "The uploaded face could not be processed. "
-            "Please try another clear photo.",
+            "No usable face could be extracted from the "
+            "uploaded photo. Please use a clear photo where "
+            "the face is visible.",
         )
 
     best_case = None
-    best_similarity = -1.0
+    best_data = None
     usable_photos = 0
 
     # --------------------------------------------------------
-    # Compare with every stored case.
+    # Compare with every case.
     # --------------------------------------------------------
     for case in cases:
         storage_path = case.get("photo_path")
@@ -866,24 +899,28 @@ def find_best_face_match(
         if stored_image is None:
             continue
 
-        stored_feature = extract_sface_feature(
+        stored_features = extract_sface_views(
             stored_image,
             recognizer,
         )
 
-        if stored_feature is None:
+        if not stored_features:
             continue
 
         usable_photos += 1
 
-        similarity = cosine_similarity(
-            uploaded_feature,
-            stored_feature,
+        comparison = compare_feature_sets(
+            uploaded_features,
+            stored_features,
         )
 
-        if similarity > best_similarity:
-            best_similarity = similarity
+        if (
+            best_data is None
+            or comparison["ensemble"]
+            > best_data["ensemble"]
+        ):
             best_case = case
+            best_data = comparison
 
     if best_case is None:
         return (
@@ -893,22 +930,31 @@ def find_best_face_match(
             "for face comparison.",
         )
 
+    similarity = best_data["ensemble"]
+
+    is_match = (
+        best_data["best"] >= FACE_MATCH_THRESHOLD
+        and best_data["second"] >= SECOND_VIEW_THRESHOLD
+        and best_data["ensemble"] >= ENSEMBLE_THRESHOLD
+    )
+
     return (
         best_case,
         {
-            "similarity": best_similarity,
-            "score": similarity_to_percentage(
-                best_similarity
-            ),
+            "similarity": similarity,
+            "score": similarity_to_percentage(similarity),
+            "best": best_data["best"],
+            "second": best_data["second"],
+            "ensemble": best_data["ensemble"],
             "usable_photos": usable_photos,
             "exact_photo": False,
+            "is_match": is_match,
         },
         None,
     )
 
-
 # ============================================================
-# DOWNLOAD IMAGE
+# IMAGE DOWNLOAD
 # ============================================================
 def download_image(storage_path):
     data = download_image_bytes(storage_path)
@@ -918,12 +964,10 @@ def download_image(storage_path):
 
     return image_from_bytes(data)
 
-
 # ============================================================
 # LOAD CASES
 # ============================================================
 st.session_state.cases = load_cases()
-
 
 # ============================================================
 # SIDEBAR
@@ -957,7 +1001,6 @@ if st.session_state.admin_logged_in:
         st.session_state.admin_logged_in = False
         st.rerun()
 
-
 # ============================================================
 # HOME
 # ============================================================
@@ -968,9 +1011,9 @@ if page == "🏠 Home":
     )
 
     st.write(
-        "TRACE-AI helps store and search missing-person cases "
-        "using case information, photographs, location names "
-        "and AI-based face comparison."
+        "TRACE-AI helps store and search missing-person "
+        "cases using case information, photographs, "
+        "location names and AI-based face comparison."
     )
 
     st.divider()
@@ -999,7 +1042,6 @@ if page == "🏠 Home":
         "Use the sidebar to report, track, search, "
         "or manage cases."
     )
-
 
 # ============================================================
 # REPORT
@@ -1066,9 +1108,7 @@ elif page == "📝 Report Missing Person":
 
     if submitted:
         if not name.strip():
-            st.error(
-                "Please enter the person's name."
-            )
+            st.error("Please enter the person's name.")
 
         elif not location.strip():
             st.error(
@@ -1081,16 +1121,11 @@ elif page == "📝 Report Missing Person":
             )
 
         elif photo is None:
-            st.error(
-                "Please upload a photo."
-            )
+            st.error("Please upload a photo.")
 
         else:
             case_id = get_next_id()
-
-            ticket_id = create_ticket_id(
-                case_id
-            )
+            ticket_id = create_ticket_id(case_id)
 
             storage_path = upload_photo(
                 photo,
@@ -1121,9 +1156,7 @@ elif page == "📝 Report Missing Person":
                     .isoformat(),
                 }
 
-                result = insert_case(
-                    case_data
-                )
+                result = insert_case(case_data)
 
                 if result is None:
                     delete_photo(storage_path)
@@ -1143,14 +1176,11 @@ elif page == "📝 Report Missing Person":
                         "Please save your Ticket ID."
                     )
 
-
 # ============================================================
 # TRACK
 # ============================================================
 elif page == "🎫 Track Ticket":
-    st.title(
-        "🎫 Track Missing Person Ticket"
-    )
+    st.title("🎫 Track Missing Person Ticket")
 
     ticket = st.text_input(
         "Enter Ticket ID",
@@ -1162,9 +1192,7 @@ elif page == "🎫 Track Ticket":
         use_container_width=True,
     ):
         if not ticket.strip():
-            st.warning(
-                "Please enter a Ticket ID."
-            )
+            st.warning("Please enter a Ticket ID.")
 
         else:
             matches = [
@@ -1227,9 +1255,7 @@ elif page == "🎫 Track Ticket":
                         "Missing",
                     )
 
-                    if str(
-                        status
-                    ).lower() == "found":
+                    if str(status).lower() == "found":
                         st.success(
                             f"Status: {status}"
                         )
@@ -1248,14 +1274,11 @@ elif page == "🎫 Track Ticket":
                             width=250,
                         )
 
-
 # ============================================================
 # SEARCH CASES
 # ============================================================
 elif page == "🔍 Search Cases":
-    st.title(
-        "🔍 Search Missing Person Cases"
-    )
+    st.title("🔍 Search Missing Person Cases")
 
     st.write(
         "Search using a person's name and location."
@@ -1291,10 +1314,7 @@ elif page == "🔍 Search Cases":
                 not search_name.strip()
                 or search_name.strip().lower()
                 in str(
-                    case.get(
-                        "name",
-                        "",
-                    )
+                    case.get("name", "")
                 ).lower()
             )
 
@@ -1302,10 +1322,7 @@ elif page == "🔍 Search Cases":
                 not search_location.strip()
                 or search_location.strip().lower()
                 in str(
-                    case.get(
-                        "location",
-                        "",
-                    )
+                    case.get("location", "")
                 ).lower()
             )
 
@@ -1313,10 +1330,7 @@ elif page == "🔍 Search Cases":
                 search_status == "All"
                 or search_status.lower()
                 == str(
-                    case.get(
-                        "status",
-                        "",
-                    )
+                    case.get("status", "")
                 ).lower()
             )
 
@@ -1339,15 +1353,11 @@ elif page == "🔍 Search Cases":
 
             for case in results:
                 with st.container(border=True):
-                    c1, c2 = st.columns(
-                        [1, 2]
-                    )
+                    c1, c2 = st.columns([1, 2])
 
                     with c1:
                         url = get_public_photo_url(
-                            case.get(
-                                "photo_path"
-                            )
+                            case.get("photo_path")
                         )
 
                         if url:
@@ -1394,14 +1404,11 @@ elif page == "🔍 Search Cases":
                             f"{case.get('status', '')}"
                         )
 
-                        if case.get(
-                            "description"
-                        ):
+                        if case.get("description"):
                             st.write(
                                 f"**Description:** "
                                 f"{case.get('description')}"
                             )
-
 
 # ============================================================
 # AI FACE SEARCH
@@ -1415,16 +1422,21 @@ elif page == "🤖 AI Face Search":
     )
 
     st.info(
-        "TRACE-AI first checks whether the uploaded file "
-        "is exactly the same stored photo. If it is not, "
-        "OpenCV YuNet/SFace is used for facial comparison. "
-        "The displayed percentage is a similarity score, "
-        "not guaranteed identity accuracy."
+        "The system first checks for the exact same photo. "
+        "If it is a different photo, OpenCV YuNet + SFace "
+        "compare the detected face using multiple controlled "
+        "face views. The percentage is a similarity score, "
+        "not identity accuracy."
     )
 
     st.warning(
         "A face similarity result is only a screening result. "
         "Always verify identity before taking action."
+    )
+
+    st.write(
+        "Matching rule: best view ≥ 0.70, second view ≥ 0.62, "
+        "and two-view ensemble ≥ 0.65."
     )
 
     search_photo = st.file_uploader(
@@ -1492,20 +1504,18 @@ elif page == "🤖 AI Face Search":
                     )
 
                 else:
-                    similarity = match_data[
-                        "similarity"
-                    ]
-
-                    score = match_data[
-                        "score"
-                    ]
-
-                    usable_photos = match_data[
-                        "usable_photos"
-                    ]
-
+                    similarity = match_data["similarity"]
+                    score = match_data["score"]
+                    best_score = match_data["best"]
+                    second_score = match_data["second"]
+                    ensemble = match_data["ensemble"]
+                    usable_photos = match_data["usable_photos"]
                     exact_photo = match_data.get(
                         "exact_photo",
+                        False,
+                    )
+                    is_match = match_data.get(
+                        "is_match",
                         False,
                     )
 
@@ -1516,7 +1526,8 @@ elif page == "🤖 AI Face Search":
 
                     if exact_photo:
                         st.success(
-                            "✅ Exact same photo found in the case records."
+                            "✅ Exact same photo found in "
+                            "the case records."
                         )
 
                         st.metric(
@@ -1524,15 +1535,31 @@ elif page == "🤖 AI Face Search":
                             "100%",
                         )
 
-                    elif similarity >= FACE_MATCH_THRESHOLD:
+                    elif is_match:
                         st.success(
-                            "Potential face match found."
+                            "✅ Strong potential face match found."
                         )
 
                         st.metric(
                             "AI Similarity Score",
                             f"{score}%",
                         )
+
+                        with st.expander(
+                            "Show technical matching scores"
+                        ):
+                            st.write(
+                                f"Best view cosine: "
+                                f"{best_score:.4f}"
+                            )
+                            st.write(
+                                f"Second view cosine: "
+                                f"{second_score:.4f}"
+                            )
+                            st.write(
+                                f"Two-view ensemble: "
+                                f"{ensemble:.4f}"
+                            )
 
                         st.warning(
                             "This is a potential match, not proof "
@@ -1542,7 +1569,7 @@ elif page == "🤖 AI Face Search":
 
                     else:
                         st.warning(
-                            "No strong face match was found."
+                            "❌ No strong face match was found."
                         )
 
                         st.metric(
@@ -1550,138 +1577,155 @@ elif page == "🤖 AI Face Search":
                             f"{score}%",
                         )
 
+                        with st.expander(
+                            "Show technical matching scores"
+                        ):
+                            st.write(
+                                f"Best view cosine: "
+                                f"{best_score:.4f}"
+                            )
+                            st.write(
+                                f"Second view cosine: "
+                                f"{second_score:.4f}"
+                            )
+                            st.write(
+                                f"Two-view ensemble: "
+                                f"{ensemble:.4f}"
+                            )
+
                         st.write(
                             "The closest stored face did not "
-                            "reach the stricter matching threshold. "
-                            "A result below the threshold is not "
-                            "treated as a potential match."
+                            "pass all three matching conditions. "
+                            "Reporter contact information is not "
+                            "shown for a result below the threshold."
                         )
 
-                        # Do not expose reporter contact
-                        # when the threshold is not reached.
-                        st.stop()
+                    # ------------------------------------------------
+                    # Only show case details/contact for a strong match.
+                    # ------------------------------------------------
+                    if is_match or exact_photo:
+                        c1, c2 = st.columns([1, 2])
 
-                    c1, c2 = st.columns(
-                        [1, 2]
-                    )
-
-                    with c1:
-                        url = get_public_photo_url(
-                            matched_case.get(
-                                "photo_path"
-                            )
-                        )
-
-                        if url:
-                            st.image(
-                                url,
-                                width=250,
+                        with c1:
+                            url = get_public_photo_url(
+                                matched_case.get("photo_path")
                             )
 
-                    with c2:
+                            if url:
+                                st.image(
+                                    url,
+                                    width=250,
+                                )
+
+                        with c2:
+                            st.subheader(
+                                matched_case.get(
+                                    "name",
+                                    "Unknown",
+                                )
+                            )
+
+                            st.write(
+                                f"**Ticket:** "
+                                f"{matched_case.get('ticket_id', '')}"
+                            )
+
+                            st.write(
+                                f"**Age:** "
+                                f"{matched_case.get('age', '')}"
+                            )
+
+                            st.write(
+                                f"**Gender:** "
+                                f"{matched_case.get('gender', '')}"
+                            )
+
+                            st.write(
+                                f"**Location:** "
+                                f"{matched_case.get('location', '')}"
+                            )
+
+                            st.write(
+                                f"**Status:** "
+                                f"{matched_case.get('status', '')}"
+                            )
+
+                        st.divider()
+
                         st.subheader(
-                            matched_case.get(
-                                "name",
-                                "Unknown",
+                            "📞 Reporter Contact"
+                        )
+
+                        reporter_contact = matched_case.get(
+                            "contact",
+                            "",
+                        )
+
+                        if reporter_contact:
+                            st.success(
+                                "📞 Reporter Contact Number: "
+                                f"{reporter_contact}"
+                            )
+                        else:
+                            st.warning(
+                                "No reporter contact number "
+                                "was provided."
+                            )
+
+                        st.divider()
+
+                        st.subheader(
+                            "📧 Contact TRACE-AI Administrator"
+                        )
+
+                        st.write(
+                            "If you believe you have found this "
+                            "person, inform the TRACE-AI administrator "
+                            "and provide the Ticket ID."
+                        )
+
+                        email_subject = (
+                            "TRACE-AI Potential Match - "
+                            + str(
+                                matched_case.get(
+                                    "ticket_id",
+                                    "",
+                                )
                             )
                         )
 
-                        st.write(
-                            f"**Ticket:** "
-                            f"{matched_case.get('ticket_id', '')}"
+                        email_body = (
+                            "Hello TRACE-AI Administrator,\n\n"
+                            "I believe I may have found the person "
+                            "associated with this case.\n\n"
+                            f"Ticket ID: "
+                            f"{matched_case.get('ticket_id', '')}\n"
+                            f"Name: "
+                            f"{matched_case.get('name', '')}\n"
+                            f"Location: "
+                            f"{matched_case.get('location', '')}\n"
+                            f"AI Similarity Score: {score}%\n\n"
+                            "Please verify this information."
                         )
 
-                        st.write(
-                            f"**Age:** "
-                            f"{matched_case.get('age', '')}"
+                        mailto = (
+                            f"mailto:{ADMIN_EMAIL}"
+                            f"?subject="
+                            f"{urllib.parse.quote(email_subject)}"
+                            f"&body="
+                            f"{urllib.parse.quote(email_body)}"
                         )
 
-                        st.write(
-                            f"**Gender:** "
-                            f"{matched_case.get('gender', '')}"
+                        st.link_button(
+                            "📧 Email Administrator",
+                            mailto,
+                            use_container_width=True,
                         )
 
-                        st.write(
-                            f"**Location:** "
-                            f"{matched_case.get('location', '')}"
+                        st.info(
+                            f"Administrator Email: "
+                            f"{ADMIN_EMAIL}"
                         )
-
-                        st.write(
-                            f"**Status:** "
-                            f"{matched_case.get('status', '')}"
-                        )
-
-                    st.divider()
-
-                    st.subheader(
-                        "📞 Reporter Contact"
-                    )
-
-                    reporter_contact = matched_case.get(
-                        "contact",
-                        "",
-                    )
-
-                    if reporter_contact:
-                        st.success(
-                            "📞 Reporter Contact Number: "
-                            f"{reporter_contact}"
-                        )
-
-                    else:
-                        st.warning(
-                            "No reporter contact number was provided."
-                        )
-
-                    st.divider()
-
-                    st.subheader(
-                        "📧 Contact TRACE-AI Administrator"
-                    )
-
-                    st.write(
-                        "If you believe you have found this "
-                        "person, inform the TRACE-AI administrator "
-                        "and provide the Ticket ID."
-                    )
-
-                    email_subject = (
-                        "TRACE-AI Potential Match - "
-                        + str(
-                            matched_case.get(
-                                "ticket_id",
-                                "",
-                            )
-                        )
-                    )
-
-                    email_body = (
-                        "Hello TRACE-AI Administrator,\n\n"
-                        "I believe I may have found the person "
-                        "associated with this case.\n\n"
-                        f"Ticket ID: {matched_case.get('ticket_id', '')}\n"
-                        f"Name: {matched_case.get('name', '')}\n"
-                        f"Location: {matched_case.get('location', '')}\n"
-                        f"AI Similarity Score: {score}%\n\n"
-                        "Please verify this information."
-                    )
-
-                    mailto = (
-                        f"mailto:{ADMIN_EMAIL}"
-                        f"?subject={urllib.parse.quote(email_subject)}"
-                        f"&body={urllib.parse.quote(email_body)}"
-                    )
-
-                    st.link_button(
-                        "📧 Email Administrator",
-                        mailto,
-                        use_container_width=True,
-                    )
-
-                    st.info(
-                        f"Administrator Email: {ADMIN_EMAIL}"
-                    )
-
 
 # ============================================================
 # LOCATION
@@ -1703,9 +1747,7 @@ elif page == "📍 GPS Location":
         cases = st.session_state.cases
 
         if not cases:
-            st.info(
-                "No cases are available."
-            )
+            st.info("No cases are available.")
 
         else:
             options = {
@@ -1753,9 +1795,7 @@ elif page == "📍 GPS Location":
                         )
 
                         st.session_state.cases = load_cases()
-
                         st.rerun()
-
 
 # ============================================================
 # ALERTS
@@ -1768,8 +1808,7 @@ elif page == "🚨 Alerts":
         for c in st.session_state.cases
         if str(
             c.get("status", "")
-        ).lower()
-        == "missing"
+        ).lower() == "missing"
     ]
 
     if not missing_cases:
@@ -1786,9 +1825,7 @@ elif page == "🚨 Alerts":
 
         for case in missing_cases:
             with st.container(border=True):
-                c1, c2 = st.columns(
-                    [1, 3]
-                )
+                c1, c2 = st.columns([1, 3])
 
                 with c1:
                     url = get_public_photo_url(
@@ -1830,7 +1867,6 @@ elif page == "🚨 Alerts":
                             f"{case.get('description')}"
                         )
 
-
 # ============================================================
 # CONTACT ADMIN
 # ============================================================
@@ -1844,10 +1880,7 @@ elif page == "📧 Contact Administrator":
         "please contact the TRACE-AI administrator."
     )
 
-    st.subheader(
-        "Administrator Email"
-    )
-
+    st.subheader("Administrator Email")
     st.info(ADMIN_EMAIL)
 
     subject = st.text_input(
@@ -1880,7 +1913,6 @@ elif page == "📧 Contact Administrator":
         "the administrator."
     )
 
-
 # ============================================================
 # ADMIN LOGIN
 # ============================================================
@@ -1888,14 +1920,10 @@ elif page == "🔐 Admin Login":
     st.title("🔐 Admin Login")
 
     if st.session_state.admin_logged_in:
-        st.success(
-            "You are already logged in."
-        )
+        st.success("You are already logged in.")
 
     else:
-        username = st.text_input(
-            "Username"
-        )
+        username = st.text_input("Username")
 
         password = st.text_input(
             "Password",
@@ -1912,10 +1940,7 @@ elif page == "🔐 Admin Login":
             ):
                 st.session_state.admin_logged_in = True
 
-                st.success(
-                    "Login successful."
-                )
-
+                st.success("Login successful.")
                 st.rerun()
 
             else:
@@ -1923,16 +1948,12 @@ elif page == "🔐 Admin Login":
                     "Invalid username or password."
                 )
 
-
 # ============================================================
 # ADMIN DASHBOARD
 # ============================================================
 if st.session_state.admin_logged_in:
     st.sidebar.divider()
-
-    st.sidebar.subheader(
-        "👨‍💼 Administration"
-    )
+    st.sidebar.subheader("👨‍💼 Administration")
 
     open_admin = st.sidebar.checkbox(
         "Open Admin Dashboard"
@@ -1959,15 +1980,11 @@ if st.session_state.admin_logged_in:
 
             for case in cases:
                 with st.container(border=True):
-                    c1, c2 = st.columns(
-                        [1, 3]
-                    )
+                    c1, c2 = st.columns([1, 3])
 
                     with c1:
                         url = get_public_photo_url(
-                            case.get(
-                                "photo_path"
-                            )
+                            case.get("photo_path")
                         )
 
                         if url:
@@ -2056,9 +2073,7 @@ if st.session_state.admin_logged_in:
                             ),
                         )
 
-                        update_col, delete_col = st.columns(
-                            2
-                        )
+                        update_col, delete_col = st.columns(2)
 
                         with update_col:
                             if st.button(
@@ -2075,12 +2090,13 @@ if st.session_state.admin_logged_in:
                                 )
 
                                 if result is not None:
-                                    st.session_state.cases = load_cases()
+                                    st.session_state.cases = (
+                                        load_cases()
+                                    )
 
                                     st.success(
                                         "Status updated successfully."
                                     )
-
                                     st.rerun()
 
                         with delete_col:
@@ -2103,17 +2119,11 @@ if st.session_state.admin_logged_in:
                                         )
                                     )
 
-                                    st.session_state.cases = load_cases()
+                                    st.session_state.cases = (
+                                        load_cases()
+                                    )
 
                                     st.success(
                                         "Case deleted successfully."
                                     )
-
                                     st.rerun()
-
-
-st.divider()
-
-st.caption(
-    "TRACE-AI • Finding Missing People Using AI"
-)
